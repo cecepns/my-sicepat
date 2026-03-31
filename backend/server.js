@@ -440,7 +440,7 @@ app.get('/api/tasks', authMiddleware(), async (req, res) => {
   return res.json({ data: mapped, total: countRows[0].total, page: pg.page, limit: pg.limit })
 })
 
-app.post('/api/tasks', authMiddleware(['admin', 'sales']), upload.array('attachments', 10), async (req, res) => {
+app.post('/api/tasks', authMiddleware(['admin', 'sales', 'user']), upload.array('attachments', 10), async (req, res) => {
   const {
     title,
     description,
@@ -469,6 +469,10 @@ app.post('/api/tasks', authMiddleware(['admin', 'sales']), upload.array('attachm
     const [techRows] = await db.query('SELECT id, role FROM users WHERE id = ? AND is_active = 1', [assigneeId])
     if (!techRows.length || techRows[0].role !== 'user') return res.status(400).json({ message: 'Pegawai tidak valid' })
     targetUserId = assigneeId
+    createdById = null
+  } else if (req.user.role === 'user') {
+    // Pegawai membuat tugas untuk dirinya sendiri
+    targetUserId = req.user.id
     createdById = null
   }
 

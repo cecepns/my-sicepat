@@ -223,7 +223,9 @@ export default function UserTasksPage() {
     try {
       const formData = new FormData()
       Object.entries(form).forEach(([k, v]) => formData.append(k, v ?? ''))
-      if (isSales) formData.append('assigned_user_id', String(selectedTechnician.value))
+      if (isSales) {
+        formData.append('assigned_user_id', String(selectedTechnician.value))
+      }
       if (form.location_source === 'gps' && formLocation.latitude !== null && formLocation.longitude !== null) {
         formData.append('latitude', formLocation.latitude)
         formData.append('longitude', formLocation.longitude)
@@ -416,14 +418,14 @@ export default function UserTasksPage() {
       <div className="card">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">{pageTitle}</h2>
-          {isSales && (
+          {(isSales || isTech) && (
             <button className="btn-primary" onClick={() => setOpenCreateModal(true)}>
               + Buat Tugas
             </button>
           )}
         </div>
         {isSales && <p className="mt-2 text-sm text-slate-600">Buat tugas baru dan pilih teknisi (pegawai) yang akan mengerjakan di lapangan.</p>}
-        {isTech && <p className="mt-2 text-sm text-slate-600">Mulai pengerjaan di lapangan. Sebelum menyelesaikan tugas wajib upload minimal satu foto dan isi keterangan penyelesaian.</p>}
+        {isTech && <p className="mt-2 text-sm text-slate-600">Kamu bisa membuat dan mengerjakan tugasmu sendiri. Sebelum menyelesaikan tugas wajib upload minimal satu foto dan isi keterangan penyelesaian.</p>}
       </div>
 
       <div className="card">
@@ -872,12 +874,26 @@ export default function UserTasksPage() {
         )}
       </Modal>
 
-      <Modal open={openCreateModal} title="Buat tugas untuk teknisi" onClose={() => setOpenCreateModal(false)} maxWidth="max-w-4xl">
+      <Modal
+        open={openCreateModal}
+        title={isSales ? 'Buat tugas untuk teknisi' : 'Buat tugas saya'}
+        onClose={() => setOpenCreateModal(false)}
+        maxWidth="max-w-4xl"
+      >
         <form onSubmit={createTask} className="space-y-4">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Teknisi (pegawai) *</label>
-            <AsyncSelect placeholder="Cari nama teknisi..." value={selectedTechnician} onChange={setSelectedTechnician} loadOptions={loadTechnicians} defaultOptions cacheOptions />
-          </div>
+          {isSales && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Teknisi (pegawai) *</label>
+              <AsyncSelect
+                placeholder="Cari nama teknisi..."
+                value={selectedTechnician}
+                onChange={setSelectedTechnician}
+                loadOptions={loadTechnicians}
+                defaultOptions
+                cacheOptions
+              />
+            </div>
+          )}
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">Judul Tugas</label>
             <input className="input" placeholder="Contoh: Instalasi internet rumah pelanggan" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required />
