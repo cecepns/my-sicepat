@@ -1,0 +1,35 @@
+# Node dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+frontend/dist/
+backend/dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*.tmp
+.vscode/
+.idea/
+
+# Uploads / runtime data
+backend/uploads-my-sicepat/
+
+# Coverage / test
+coverage/
+

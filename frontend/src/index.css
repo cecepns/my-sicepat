@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  background: #f6f8fc;
+  color: #1f2937;
+}
+
+.card {
+  @apply rounded-xl bg-white p-4 shadow-sm border border-slate-100;
+}
+
+.input {
+  @apply w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-blue-500;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium;
+}
+
+.btn-primary {
+  @apply btn bg-brand-red text-white hover:opacity-90;
+}
