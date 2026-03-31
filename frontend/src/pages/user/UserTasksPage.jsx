@@ -196,6 +196,19 @@ export default function UserTasksPage() {
     return `https://maps.google.com/?q=${latitude},${longitude}`
   }
 
+  const creatorBadgeClass = (role) => {
+    if (role === 'admin') return 'bg-rose-100 text-rose-700'
+    if (role === 'sales') return 'bg-indigo-100 text-indigo-700'
+    return 'bg-slate-100 text-slate-600'
+  }
+
+  const creatorLabel = (task) => {
+    const role = task.created_by_role || (task.created_by_name ? 'sales' : 'teknisi')
+    const name = task.created_by_name || task.user_name || '-'
+    const roleText = role === 'admin' ? 'ADMIN' : role === 'sales' ? 'SALES' : 'TEKNISI'
+    return { name, role, roleText }
+  }
+
   const getCurrentLocation = (setter, sourceSetter) => {
     if (!navigator.geolocation) {
       toast.error('Browser tidak mendukung GPS')
@@ -481,8 +494,14 @@ export default function UserTasksPage() {
               </div>
               <p className="text-xs font-medium text-slate-500">
                 Teknisi: {task.user_name}
-                {task.created_by_name ? ` · Dibuat oleh: ${task.created_by_name} (${task.created_by_role || 'admin'})` : ''}
               </p>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-500">Dibuat oleh:</span>
+                <span className="font-medium text-slate-700">{creatorLabel(task).name}</span>
+                <span className={`rounded-full px-2 py-0.5 font-semibold ${creatorBadgeClass(creatorLabel(task).role)}`}>
+                  {creatorLabel(task).roleText}
+                </span>
+              </div>
               {task.assignment_scope === 'all_technicians' ? (
                 <p className="text-xs text-slate-500">
                   Tugas untuk semua teknisi · Pengambil: {task.claimed_by?.length ? task.claimed_by.map((item) => item.user_name).join(', ') : 'Belum ada'}
@@ -663,8 +682,14 @@ export default function UserTasksPage() {
             </div>
             <p className="text-sm text-slate-600">
               Teknisi: {detailTask.user_name}
-              {detailTask.created_by_name ? ` · Dibuat oleh: ${detailTask.created_by_name} (${detailTask.created_by_role || 'admin'})` : ''}
             </p>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-slate-600">Dibuat oleh:</span>
+              <span className="font-medium text-slate-700">{creatorLabel(detailTask).name}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${creatorBadgeClass(creatorLabel(detailTask).role)}`}>
+                {creatorLabel(detailTask).roleText}
+              </span>
+            </div>
             {detailTask.assignment_scope === 'all_technicians' ? (
               <p className="text-sm text-slate-600">
                 <span className="font-medium">Pengambil tugas: </span>
