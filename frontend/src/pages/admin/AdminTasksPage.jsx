@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import AsyncSelect from 'react-select/async'
 import DatePicker from 'react-datepicker'
-import { FileText, Image as ImageIcon, Search, Trash2 } from 'lucide-react'
+import { FileText, Image as ImageIcon, ImagePlus, Search, Trash2, X } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'react-toastify'
 import client from '../../api/client'
@@ -20,6 +20,11 @@ export default function AdminTasksPage() {
   const [rows, setRows] = useState([])
   const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0 })
   const [detailTask, setDetailTask] = useState(null)
+  const [openCreateModal, setOpenCreateModal] = useState(false)
+  const [createForm, setCreateForm] = useState({ title: '', description: '', deadline_date: '', status: 'todo' })
+  const [createUser, setCreateUser] = useState(null)
+  const [createFiles, setCreateFiles] = useState([])
+  const [createDragActive, setCreateDragActive] = useState(false)
   const debouncedSearch = useDebounce(search, 1000)
 
   const loadUsers = async (inputValue) => {
@@ -87,6 +92,42 @@ export default function AdminTasksPage() {
     }
   }
 
+  const handleCreateFiles = async (inputFiles) => {
+    if (!inputFiles?.length) return
+    setCreateFiles(Array.from(inputFiles))
+  }
+
+  const resetCreateState = () => {
+    setCreateForm({ title: '', description: '', deadline_date: '', status: 'todo' })
+    setCreateUser(null)
+    setCreateFiles([])
+    setCreateDragActive(false)
+  }
+
+  const submitCreate = async (e) => {
+    e.preventDefault()
+    if (!createUser?.value) {
+      toast.error('Pilih pegawai/teknisi yang ditugaskan')
+      return
+    }
+    try {
+      const formData = new FormData()
+      formData.append('title', createForm.title)
+      formData.append('description', createForm.description || '')
+      formData.append('deadline_date', createForm.deadline_date || '')
+      formData.append('status', createForm.status || 'todo')
+      formData.append('assigned_user_id', String(createUser.value))
+      createFiles.forEach((file) => formData.append('attachments', file))
+      await client.post(ENDPOINTS.tasks, formData)
+      toast.success('Tugas berhasil dibuat')
+      resetCreateState()
+      setOpenCreateModal(false)
+      fetchData(1)
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Gagal membuat tugas')
+    }
+  }
+
   return (
     <div className="card">
       <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-start">
@@ -102,6 +143,9 @@ export default function AdminTasksPage() {
         />
         <DatePicker selected={date} onChange={setDate} className="input lg:w-56" placeholderText="Filter tanggal" dateFormat="yyyy-MM-dd" />
         <button className="btn bg-[#11295a] text-white hover:opacity-90 lg:w-28 lg:shrink-0" onClick={() => fetchData(1)}>Filter</button>
+        <button className="btn bg-emerald-600 text-white hover:opacity-90 lg:w-40 lg:shrink-0" onClick={() => setOpenCreateModal(true)}>
+          + Buat Tugas
+        </button>
       </div>
 
       <div className="space-y-3">
@@ -203,6 +247,108 @@ export default function AdminTasksPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal open={openCreateModal} title="Buat Tugas untuk Pegawai" onClose={() => { setOpenCreateModal(false); resetCreateState() }} maxWidth="max-w-4xl">
+        <form onSubmit={submitCreate} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Pegawai / Teknisi *</label>
+            <AsyncSelect
+              placeholder="Pilih pegawai yang ditugaskan"
+              value={createUser}
+              onChange={setCreateUser}
+              loadOptions={loadUsers}
+              defaultOptions
+              cacheOptions
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Judul Tugas</label>
+            <input
+              className="input"
+              placeholder="Contoh: Instalasi internet pelanggan"
+              value={createForm.title}
+              onChange={(e) => setCreateForm({ ...createForm, title: e.target.value })}
+              required
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Deskripsi</label>
+            <textarea
+              className="input"
+              placeholder="Detail pekerjaan, alamat, catatan khusus..."
+              value={createForm.description}
+              onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
+            />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Deadline</label>
+              <input
+                className="input"
+                type="date"
+                value={createForm.deadline_date}
+                onChange={(e) => setCreateForm({ ...createForm, deadline_date: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Status awal</label>
+              <select
+                className="input"
+                value={createForm.status}
+                onChange={(e) => setCreateForm({ ...createForm, status: e.target.value })}
+              >
+                <option value="todo">todo</option>
+                <option value="in_progress">in_progress</option>
+                <option value="done">done</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Lampiran (opsional)</label>
+            <label
+              className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-5 text-center transition ${
+                createDragActive ? 'border-brand-red bg-red-50' : 'border-slate-200 bg-slate-50 hover:border-brand-red/60'
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setCreateDragActive(true)
+              }}
+              onDragLeave={() => setCreateDragActive(false)}
+              onDrop={(e) => {
+                e.preventDefault()
+                setCreateDragActive(false)
+                handleCreateFiles(e.dataTransfer.files)
+              }}
+            >
+              <input className="hidden" type="file" multiple onChange={(e) => handleCreateFiles(e.target.files)} />
+              <ImagePlus size={26} className="mb-2 text-slate-500" />
+              <p className="text-sm font-medium text-slate-700">Klik atau drag-drop file</p>
+            </label>
+          </div>
+          {!!createFiles.length && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-slate-700">File terpilih ({createFiles.length})</p>
+              <ul className="text-xs text-slate-600">
+                {createFiles.map((f) => (
+                  <li key={`${f.name}-${f.lastModified}`} className="flex items-center justify-between gap-2">
+                    <span className="truncate">{f.name}</span>
+                    <span>{Math.round(f.size / 1024)} KB</span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="btn inline-flex items-center gap-1 border border-rose-200 text-rose-600"
+                onClick={() => setCreateFiles([])}
+              >
+                <X size={14} /> Hapus Semua File
+              </button>
+            </div>
+          )}
+          <button className="btn-primary">Simpan Tugas</button>
+        </form>
       </Modal>
     </div>
   )

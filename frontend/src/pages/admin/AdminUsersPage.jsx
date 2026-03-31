@@ -124,7 +124,7 @@ export default function AdminUsersPage() {
                             : 'bg-blue-100 text-blue-700'
                       }`}
                     >
-                      {row.role}
+                      {row.role === 'user' ? 'pegawai' : row.role}
                     </span>
                   </td>
                   <td className="px-4 py-3">
