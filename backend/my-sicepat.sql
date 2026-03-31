@@ -49,8 +49,10 @@ CREATE TABLE IF NOT EXISTS attendance (
 
 CREATE TABLE IF NOT EXISTS tasks (
   id INT PRIMARY KEY AUTO_INCREMENT,
-  user_id INT NOT NULL,
+  user_id INT NULL,
   created_by_id INT NULL,
+  assignment_scope ENUM('single', 'all_technicians') NOT NULL DEFAULT 'single',
+  max_claimants INT NOT NULL DEFAULT 2,
   title VARCHAR(200) NOT NULL,
   description TEXT NULL,
   deadline_date DATE NULL,
@@ -71,6 +73,18 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_tasks_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_tasks_created_by FOREIGN KEY (created_by_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_claims (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  task_id INT NOT NULL,
+  user_id INT NOT NULL,
+  claimed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_task_claim_user (task_id, user_id),
+  KEY idx_task_claim_task (task_id),
+  KEY idx_task_claim_user (user_id),
+  CONSTRAINT fk_task_claims_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_task_claims_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS task_attachments (

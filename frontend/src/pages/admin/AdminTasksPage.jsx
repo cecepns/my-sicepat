@@ -23,6 +23,7 @@ export default function AdminTasksPage() {
   const [openCreateModal, setOpenCreateModal] = useState(false)
   const [createForm, setCreateForm] = useState({ title: '', description: '', deadline_date: '', status: 'todo' })
   const [createUser, setCreateUser] = useState(null)
+  const [createScope, setCreateScope] = useState('single')
   const [createFiles, setCreateFiles] = useState([])
   const [createDragActive, setCreateDragActive] = useState(false)
   const debouncedSearch = useDebounce(search, 1000)
@@ -100,13 +101,14 @@ export default function AdminTasksPage() {
   const resetCreateState = () => {
     setCreateForm({ title: '', description: '', deadline_date: '', status: 'todo' })
     setCreateUser(null)
+    setCreateScope('single')
     setCreateFiles([])
     setCreateDragActive(false)
   }
 
   const submitCreate = async (e) => {
     e.preventDefault()
-    if (!createUser?.value) {
+    if (createScope === 'single' && !createUser?.value) {
       toast.error('Pilih pegawai/teknisi yang ditugaskan')
       return
     }
@@ -116,7 +118,8 @@ export default function AdminTasksPage() {
       formData.append('description', createForm.description || '')
       formData.append('deadline_date', createForm.deadline_date || '')
       formData.append('status', createForm.status || 'todo')
-      formData.append('assigned_user_id', String(createUser.value))
+      formData.append('assignment_scope', createScope)
+      if (createScope === 'single') formData.append('assigned_user_id', String(createUser.value))
       createFiles.forEach((file) => formData.append('attachments', file))
       await client.post(ENDPOINTS.tasks, formData)
       toast.success('Tugas berhasil dibuat')
@@ -165,8 +168,13 @@ export default function AdminTasksPage() {
             </div>
             <p className="mt-1 text-xs text-slate-500">
               Teknisi: {task.user_name}
-              {task.created_by_name ? ` · Sales: ${task.created_by_name}` : ''}
+              {task.created_by_name ? ` · Dibuat oleh: ${task.created_by_name} (${task.created_by_role || 'admin'})` : ''}
             </p>
+            {task.assignment_scope === 'all_technicians' ? (
+              <p className="text-xs text-slate-500">
+                Tugas untuk semua teknisi · Pengambil: {task.claimed_by?.length ? task.claimed_by.map((item) => item.user_name).join(', ') : '-'}
+              </p>
+            ) : null}
             <p className="text-sm text-slate-600">{task.description || '-'}</p>
             <p className="text-xs text-slate-500">
               Created: {dayjs(task.created_at).format('DD MMM YYYY HH:mm')} | Deadline: {task.deadline_date ? dayjs(task.deadline_date).format('DD MMM YYYY') : '-'}
@@ -200,8 +208,14 @@ export default function AdminTasksPage() {
             </div>
             <p className="text-sm text-slate-600">
               Teknisi: {detailTask.user_name}
-              {detailTask.created_by_name ? ` · Sales: ${detailTask.created_by_name}` : ''}
+              {detailTask.created_by_name ? ` · Dibuat oleh: ${detailTask.created_by_name} (${detailTask.created_by_role || 'admin'})` : ''}
             </p>
+            {detailTask.assignment_scope === 'all_technicians' ? (
+              <p className="text-sm text-slate-600">
+                <span className="font-medium">Pengambil tugas: </span>
+                {detailTask.claimed_by?.length ? detailTask.claimed_by.map((item) => item.user_name).join(', ') : 'Belum ada'}
+              </p>
+            ) : null}
             <p className="text-sm text-slate-600">{detailTask.description || '-'}</p>
             {detailTask.work_progress_note ? (
               <p className="text-sm text-slate-600">
@@ -252,16 +266,25 @@ export default function AdminTasksPage() {
       <Modal open={openCreateModal} title="Buat Tugas untuk Pegawai" onClose={() => { setOpenCreateModal(false); resetCreateState() }} maxWidth="max-w-4xl">
         <form onSubmit={submitCreate} className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Pegawai / Teknisi *</label>
-            <AsyncSelect
-              placeholder="Pilih pegawai yang ditugaskan"
-              value={createUser}
-              onChange={setCreateUser}
-              loadOptions={loadUsers}
-              defaultOptions
-              cacheOptions
-            />
+            <label className="mb-1 block text-sm font-medium text-slate-700">Jenis Penugasan *</label>
+            <select className="input" value={createScope} onChange={(e) => setCreateScope(e.target.value)}>
+              <option value="single">Per teknisi (pilih 1)</option>
+              <option value="all_technicians">Semua teknisi (maks 2 pengambil)</option>
+            </select>
           </div>
+          {createScope === 'single' && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Pegawai / Teknisi *</label>
+              <AsyncSelect
+                placeholder="Pilih pegawai yang ditugaskan"
+                value={createUser}
+                onChange={setCreateUser}
+                loadOptions={loadUsers}
+                defaultOptions
+                cacheOptions
+              />
+            </div>
+          )}
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">Judul Tugas</label>
             <input

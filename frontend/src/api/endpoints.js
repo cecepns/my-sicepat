@@ -10,6 +10,7 @@ export const ENDPOINTS = {
   attendanceAdminMark: '/attendance/admin-mark',
   tasks: '/tasks',
   taskStart: '/tasks',
+  taskClaim: '/tasks',
   userWorkStatus: '/users/work-status',
   selectUsers: '/select/users',
 }

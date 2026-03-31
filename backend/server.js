@@ -46,6 +46,8 @@ const ensureTaskSchema = async () => {
   const existing = new Set(columns.map((col) => col.COLUMN_NAME))
   const alters = []
   if (!existing.has('created_by_id')) alters.push('ADD COLUMN created_by_id INT NULL AFTER user_id')
+  if (!existing.has('assignment_scope')) alters.push("ADD COLUMN assignment_scope ENUM('single','all_technicians') NOT NULL DEFAULT 'single' AFTER created_by_id")
+  if (!existing.has('max_claimants')) alters.push('ADD COLUMN max_claimants INT NOT NULL DEFAULT 2 AFTER assignment_scope')
   if (!existing.has('started_at')) alters.push('ADD COLUMN started_at DATETIME NULL AFTER status')
   if (!existing.has('completed_at')) alters.push('ADD COLUMN completed_at DATETIME NULL AFTER started_at')
   if (!existing.has('start_latitude')) alters.push('ADD COLUMN start_latitude DECIMAL(10, 7) NULL AFTER completed_at')
@@ -59,6 +61,9 @@ const ensureTaskSchema = async () => {
   if (!existing.has('work_progress_note')) alters.push('ADD COLUMN work_progress_note TEXT NULL')
   if (!existing.has('completion_report')) alters.push('ADD COLUMN completion_report TEXT NULL')
   if (alters.length) await db.query(`ALTER TABLE tasks ${alters.join(', ')}`)
+  await db.query('ALTER TABLE tasks MODIFY COLUMN user_id INT NULL')
+  await db.query(`UPDATE tasks SET assignment_scope='single' WHERE assignment_scope IS NULL`)
+  await db.query(`UPDATE tasks SET max_claimants=2 WHERE max_claimants IS NULL OR max_claimants < 1`)
 
   const [attCols] = await db.query(
     `SELECT COLUMN_NAME
@@ -70,6 +75,20 @@ const ensureTaskSchema = async () => {
   if (!attExisting.has('is_completion')) {
     await db.query('ALTER TABLE task_attachments ADD COLUMN is_completion TINYINT(1) NOT NULL DEFAULT 0 AFTER file_size')
   }
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS task_claims (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      task_id INT NOT NULL,
+      user_id INT NOT NULL,
+      claimed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_task_claim_user (task_id, user_id),
+      KEY idx_task_claim_task (task_id),
+      KEY idx_task_claim_user (user_id),
+      CONSTRAINT fk_task_claims_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      CONSTRAINT fk_task_claims_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `)
 }
 
 const insertTaskAttachments = async (taskId, files, isCompletion) => {
@@ -84,7 +103,12 @@ const insertTaskAttachments = async (taskId, files, isCompletion) => {
 const canManageTaskMeta = (req, task) =>
   req.user.role === 'admin' || (req.user.role === 'sales' && task.created_by_id === req.user.id)
 
-const isTaskAssignee = (req, task) => task.user_id === req.user.id
+const isTaskAssignee = async (req, task) => {
+  if (task.user_id === req.user.id) return true
+  if (task.assignment_scope !== 'all_technicians') return false
+  const [rows] = await db.query('SELECT id FROM task_claims WHERE task_id=? AND user_id=? LIMIT 1', [task.id, req.user.id])
+  return Boolean(rows.length)
+}
 
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, uploadDir),
@@ -392,8 +416,8 @@ app.get('/api/tasks', authMiddleware(), async (req, res) => {
   const pg = toPagination(page, limit)
   const offset = (pg.page - 1) * pg.limit
   const role = req.user.role
-  const where = ['(t.title LIKE ? OR t.description LIKE ? OR u.name LIKE ? OR IFNULL(cb.name,"") LIKE ?)']
-  const params = [`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`]
+  const where = ['(t.title LIKE ? OR t.description LIKE ? OR IFNULL(u.name,"") LIKE ? OR IFNULL(cb.name,"") LIKE ? OR IFNULL(tc.claimed_names,"") LIKE ?)']
+  const params = [`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`]
   if (role === 'admin') {
     if (user_id) {
       where.push('t.user_id = ?')
@@ -403,7 +427,7 @@ app.get('/api/tasks', authMiddleware(), async (req, res) => {
     where.push('t.created_by_id = ?')
     params.push(req.user.id)
   } else {
-    where.push('t.user_id = ?')
+    where.push('(t.user_id = ? OR t.assignment_scope = "all_technicians")')
     params.push(req.user.id)
   }
   if (date) {
@@ -415,28 +439,65 @@ app.get('/api/tasks', authMiddleware(), async (req, res) => {
     `SELECT
       t.*,
       TIMESTAMPDIFF(SECOND, t.started_at, COALESCE(t.completed_at, NOW())) AS work_duration_seconds,
-      u.name AS user_name,
-      cb.name AS created_by_name
+      COALESCE(u.name, 'Semua teknisi') AS user_name,
+      cb.name AS created_by_name,
+      cb.role AS created_by_role,
+      IFNULL(tc.claimed_total, 0) AS claimed_total,
+      IFNULL(tc.claimed_names, '') AS claimed_names
      FROM tasks t
-     JOIN users u ON u.id=t.user_id
+     LEFT JOIN users u ON u.id=t.user_id
      LEFT JOIN users cb ON cb.id=t.created_by_id
+     LEFT JOIN (
+       SELECT
+         c.task_id,
+         COUNT(*) AS claimed_total,
+         GROUP_CONCAT(u2.name ORDER BY c.claimed_at ASC SEPARATOR ', ') AS claimed_names
+       FROM task_claims c
+       JOIN users u2 ON u2.id = c.user_id
+       GROUP BY c.task_id
+     ) tc ON tc.task_id = t.id
      WHERE ${whereClause}
      ORDER BY t.created_at DESC
      LIMIT ? OFFSET ?`,
     [...params, pg.limit, offset],
   )
   const [countRows] = await db.query(
-    `SELECT COUNT(*) AS total FROM tasks t JOIN users u ON u.id=t.user_id LEFT JOIN users cb ON cb.id=t.created_by_id WHERE ${whereClause}`,
+    `SELECT COUNT(*) AS total
+     FROM tasks t
+     LEFT JOIN users u ON u.id=t.user_id
+     LEFT JOIN users cb ON cb.id=t.created_by_id
+     LEFT JOIN (
+       SELECT
+         c.task_id,
+         GROUP_CONCAT(u2.name ORDER BY c.claimed_at ASC SEPARATOR ', ') AS claimed_names
+       FROM task_claims c
+       JOIN users u2 ON u2.id = c.user_id
+       GROUP BY c.task_id
+     ) tc ON tc.task_id = t.id
+     WHERE ${whereClause}`,
     params,
   )
   if (!rows.length) return res.json({ data: [], total: 0, page: pg.page, limit: pg.limit })
 
   const taskIds = rows.map((it) => it.id)
   const [attachments] = await db.query('SELECT * FROM task_attachments WHERE task_id IN (?) ORDER BY id DESC', [taskIds])
-  const mapped = rows.map((task) => ({
-    ...task,
-    attachments: attachments.filter((att) => att.task_id === task.id),
-  }))
+  const [claims] = await db.query(
+    `SELECT c.task_id, c.user_id, c.claimed_at, u.name AS user_name
+     FROM task_claims c
+     JOIN users u ON u.id = c.user_id
+     WHERE c.task_id IN (?)
+     ORDER BY c.claimed_at ASC`,
+    [taskIds],
+  )
+  const mapped = rows.map((task) => {
+    const taskClaims = claims.filter((item) => item.task_id === task.id)
+    return {
+      ...task,
+      max_claimants: task.max_claimants || 2,
+      claimed_by: taskClaims,
+      attachments: attachments.filter((att) => att.task_id === task.id),
+    }
+  })
   return res.json({ data: mapped, total: countRows[0].total, page: pg.page, limit: pg.limit })
 })
 
@@ -452,37 +513,50 @@ app.post('/api/tasks', authMiddleware(['admin', 'sales', 'user']), upload.array(
     longitude = null,
     assigned_user_id,
     user_id: bodyUserId,
+    assignment_scope = 'single',
   } = req.body
+  const safeScope = assignment_scope === 'all_technicians' ? 'all_technicians' : 'single'
   const rawAssignee = assigned_user_id ?? bodyUserId
   const assigneeId = rawAssignee !== undefined && rawAssignee !== null && rawAssignee !== '' ? Number(rawAssignee) : null
 
   let targetUserId = null
-  let createdById = null
+  const createdById = req.user.id
+
   if (req.user.role === 'sales') {
-    if (!assigneeId || Number.isNaN(assigneeId)) return res.status(400).json({ message: 'Teknisi (pegawai) wajib dipilih' })
-    const [techRows] = await db.query('SELECT id, role FROM users WHERE id = ? AND is_active = 1', [assigneeId])
-    if (!techRows.length || techRows[0].role !== 'user') return res.status(400).json({ message: 'Teknisi tidak valid' })
-    targetUserId = assigneeId
-    createdById = req.user.id
+    if (safeScope === 'all_technicians') {
+      targetUserId = null
+    } else {
+      if (!assigneeId || Number.isNaN(assigneeId)) return res.status(400).json({ message: 'Teknisi (pegawai) wajib dipilih' })
+      const [techRows] = await db.query('SELECT id, role FROM users WHERE id = ? AND is_active = 1', [assigneeId])
+      if (!techRows.length || techRows[0].role !== 'user') return res.status(400).json({ message: 'Teknisi tidak valid' })
+      targetUserId = assigneeId
+    }
   } else if (req.user.role === 'admin') {
-    if (!assigneeId || Number.isNaN(assigneeId)) return res.status(400).json({ message: 'Pegawai/teknisi wajib dipilih' })
-    const [techRows] = await db.query('SELECT id, role FROM users WHERE id = ? AND is_active = 1', [assigneeId])
-    if (!techRows.length || techRows[0].role !== 'user') return res.status(400).json({ message: 'Pegawai tidak valid' })
-    targetUserId = assigneeId
-    createdById = null
-  } else if (req.user.role === 'user') {
-    // Pegawai membuat tugas untuk dirinya sendiri
+    if (safeScope === 'all_technicians') {
+      targetUserId = null
+    } else {
+      if (!assigneeId || Number.isNaN(assigneeId)) return res.status(400).json({ message: 'Pegawai/teknisi wajib dipilih' })
+      const [techRows] = await db.query('SELECT id, role FROM users WHERE id = ? AND is_active = 1', [assigneeId])
+      if (!techRows.length || techRows[0].role !== 'user') return res.status(400).json({ message: 'Pegawai tidak valid' })
+      targetUserId = assigneeId
+    }
+  } else {
+    if (safeScope === 'all_technicians') return res.status(403).json({ message: 'Hanya admin/sales yang bisa membuat tugas untuk semua teknisi' })
     targetUserId = req.user.id
-    createdById = null
+  }
+
+  if (safeScope === 'single' && !targetUserId) {
+    return res.status(400).json({ message: 'User untuk tugas tidak valid' })
   }
 
   const [result] = await db.query(
     `INSERT INTO tasks
-      (user_id, created_by_id, title, description, deadline_date, status, started_at, completed_at, start_latitude, start_longitude, start_location_note, start_location_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (user_id, created_by_id, assignment_scope, max_claimants, title, description, deadline_date, status, started_at, completed_at, start_latitude, start_longitude, start_location_note, start_location_source)
+     VALUES (?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       targetUserId,
       createdById,
+      safeScope,
       title,
       description,
       deadline_date || null,
@@ -505,7 +579,7 @@ app.put('/api/tasks/:id', authMiddleware(), upload.array('attachments', 10), asy
   const task = rows[0]
   if (!task) return res.status(404).json({ message: 'Tugas tidak ditemukan' })
 
-  const assignee = isTaskAssignee(req, task)
+  const assignee = await isTaskAssignee(req, task)
   const metaEditor = canManageTaskMeta(req, task)
 
   if (!metaEditor && !assignee) return res.status(403).json({ message: 'Forbidden' })
@@ -540,7 +614,7 @@ app.post('/api/tasks/:id/start', authMiddleware(), async (req, res) => {
   const [rows] = await db.query('SELECT * FROM tasks WHERE id=?', [req.params.id])
   const task = rows[0]
   if (!task) return res.status(404).json({ message: 'Tugas tidak ditemukan' })
-  if (req.user.role !== 'admin' && task.user_id !== req.user.id) return res.status(403).json({ message: 'Forbidden' })
+  if (req.user.role !== 'admin' && !(await isTaskAssignee(req, task))) return res.status(403).json({ message: 'Forbidden' })
   if (task.completed_at) return res.status(400).json({ message: 'Tugas sudah selesai' })
   if (task.started_at) return res.status(400).json({ message: 'Tugas sudah dimulai' })
 
@@ -571,7 +645,7 @@ app.post('/api/tasks/:id/finish', authMiddleware(), upload.array('completion_att
   const [rows] = await db.query('SELECT * FROM tasks WHERE id=?', [req.params.id])
   const task = rows[0]
   if (!task) return res.status(404).json({ message: 'Tugas tidak ditemukan' })
-  if (req.user.role !== 'admin' && task.user_id !== req.user.id) return res.status(403).json({ message: 'Forbidden' })
+  if (req.user.role !== 'admin' && !(await isTaskAssignee(req, task))) return res.status(403).json({ message: 'Forbidden' })
   if (!task.started_at) return res.status(400).json({ message: 'Tugas belum dimulai' })
   if (task.completed_at) return res.status(400).json({ message: 'Tugas sudah selesai' })
 
@@ -602,7 +676,7 @@ app.delete('/api/tasks/:id', authMiddleware(), async (req, res) => {
   const task = rows[0]
   if (!task) return res.status(404).json({ message: 'Tugas tidak ditemukan' })
   const allowed =
-    req.user.role === 'admin' || isTaskAssignee(req, task) || (req.user.role === 'sales' && task.created_by_id === req.user.id)
+    req.user.role === 'admin' || (await isTaskAssignee(req, task)) || (req.user.role === 'sales' && task.created_by_id === req.user.id)
   if (!allowed) return res.status(403).json({ message: 'Forbidden' })
 
   const [attachments] = await db.query('SELECT * FROM task_attachments WHERE task_id=?', [req.params.id])
@@ -623,9 +697,11 @@ app.delete('/api/tasks/:taskId/attachments/:attachmentId', authMiddleware(), asy
   )
   const attachment = attRows[0]
   if (!attachment) return res.status(404).json({ message: 'Attachment tidak ditemukan' })
+  const [claimRows] = await db.query('SELECT id FROM task_claims WHERE task_id=? AND user_id=? LIMIT 1', [req.params.taskId, req.user.id])
   const allowed =
     req.user.role === 'admin' ||
     attachment.user_id === req.user.id ||
+    Boolean(claimRows.length) ||
     (req.user.role === 'sales' && attachment.created_by_id === req.user.id)
   if (!allowed) return res.status(403).json({ message: 'Forbidden' })
 
@@ -633,6 +709,57 @@ app.delete('/api/tasks/:taskId/attachments/:attachmentId', authMiddleware(), asy
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
   await db.query('DELETE FROM task_attachments WHERE id=?', [req.params.attachmentId])
   res.json({ message: 'Attachment berhasil dihapus' })
+})
+
+app.post('/api/tasks/:id/claim', authMiddleware(['user']), async (req, res) => {
+  const conn = await db.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [taskRows] = await conn.query('SELECT * FROM tasks WHERE id=? FOR UPDATE', [req.params.id])
+    const task = taskRows[0]
+    if (!task) {
+      await conn.rollback()
+      return res.status(404).json({ message: 'Tugas tidak ditemukan' })
+    }
+    if (task.assignment_scope !== 'all_technicians') {
+      await conn.rollback()
+      return res.status(400).json({ message: 'Tugas ini bukan tipe semua teknisi' })
+    }
+    if (task.completed_at || task.status === 'cancelled') {
+      await conn.rollback()
+      return res.status(400).json({ message: 'Tugas ini sudah ditutup' })
+    }
+
+    const [myClaim] = await conn.query('SELECT id FROM task_claims WHERE task_id=? AND user_id=? LIMIT 1', [task.id, req.user.id])
+    if (myClaim.length) {
+      await conn.commit()
+      return res.json({ message: 'Tugas sudah pernah kamu ambil' })
+    }
+
+    const [claims] = await conn.query(
+      `SELECT c.user_id, u.name
+       FROM task_claims c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.task_id=?
+       ORDER BY c.claimed_at ASC
+       FOR UPDATE`,
+      [task.id],
+    )
+    const limit = task.max_claimants || 2
+    if (claims.length >= limit) {
+      await conn.rollback()
+      return res.status(400).json({ message: `Tugas sudah diambil oleh ${claims.map((c) => c.name).join(', ')}` })
+    }
+
+    await conn.query('INSERT INTO task_claims (task_id, user_id) VALUES (?, ?)', [task.id, req.user.id])
+    await conn.commit()
+    return res.json({ message: 'Tugas berhasil diambil' })
+  } catch (error) {
+    await conn.rollback()
+    return res.status(500).json({ message: error.message })
+  } finally {
+    conn.release()
+  }
 })
 
 app.get('/api/select/users', authMiddleware(['admin', 'sales']), async (req, res) => {

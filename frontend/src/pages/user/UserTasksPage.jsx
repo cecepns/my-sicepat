@@ -30,6 +30,7 @@ export default function UserTasksPage() {
   const [dragActive, setDragActive] = useState(false)
   const [openCreateModal, setOpenCreateModal] = useState(false)
   const [selectedTechnician, setSelectedTechnician] = useState(null)
+  const [assignmentScope, setAssignmentScope] = useState('single')
 
   const [editTask, setEditTask] = useState(null)
   const [detailTask, setDetailTask] = useState(null)
@@ -211,20 +212,31 @@ export default function UserTasksPage() {
     )
   }
 
+  const isClaimedByMe = (task) => task.claimed_by?.some((item) => item.user_id === user?.id)
   const canSalesEditTask = (task) => isSales && task.created_by_id === user?.id
-  const canTechAct = (task) => isTech && task.user_id === user?.id
+  const canTechAct = (task) => isTech && (task.user_id === user?.id || isClaimedByMe(task))
+  const canTechClaim = (task) =>
+    isTech &&
+    task.assignment_scope === 'all_technicians' &&
+    !canTechAct(task) &&
+    !task.completed_at &&
+    task.status !== 'cancelled' &&
+    (task.claimed_by?.length || 0) < (task.max_claimants || 2)
 
   const createTask = async (e) => {
     e.preventDefault()
-    if (isSales && !selectedTechnician?.value) {
+    if (isSales && assignmentScope === 'single' && !selectedTechnician?.value) {
       toast.error('Pilih teknisi (pegawai) yang ditugaskan')
       return
     }
     try {
       const formData = new FormData()
       Object.entries(form).forEach(([k, v]) => formData.append(k, v ?? ''))
+      formData.append('assignment_scope', assignmentScope)
       if (isSales) {
-        formData.append('assigned_user_id', String(selectedTechnician.value))
+        if (assignmentScope === 'single') {
+          formData.append('assigned_user_id', String(selectedTechnician.value))
+        }
       }
       if (form.location_source === 'gps' && formLocation.latitude !== null && formLocation.longitude !== null) {
         formData.append('latitude', formLocation.latitude)
@@ -237,6 +249,7 @@ export default function UserTasksPage() {
       setFormLocation({ latitude: null, longitude: null })
       setFiles([])
       setSelectedTechnician(null)
+      setAssignmentScope('single')
       setOpenCreateModal(false)
       fetchData(1)
     } catch (error) {
@@ -411,6 +424,16 @@ export default function UserTasksPage() {
     }
   }
 
+  const claimTask = async (taskId) => {
+    try {
+      await client.post(`${ENDPOINTS.taskClaim}/${taskId}/claim`)
+      toast.success('Tugas berhasil diambil')
+      fetchData(meta.page)
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Gagal mengambil tugas')
+    }
+  }
+
   const pageTitle = isSales ? 'Tugas untuk Teknisi' : 'Tugas Saya'
 
   return (
@@ -458,8 +481,13 @@ export default function UserTasksPage() {
               </div>
               <p className="text-xs font-medium text-slate-500">
                 Teknisi: {task.user_name}
-                {task.created_by_name ? ` · Dari sales: ${task.created_by_name}` : ''}
+                {task.created_by_name ? ` · Dibuat oleh: ${task.created_by_name} (${task.created_by_role || 'admin'})` : ''}
               </p>
+              {task.assignment_scope === 'all_technicians' ? (
+                <p className="text-xs text-slate-500">
+                  Tugas untuk semua teknisi · Pengambil: {task.claimed_by?.length ? task.claimed_by.map((item) => item.user_name).join(', ') : 'Belum ada'}
+                </p>
+              ) : null}
               <p className="text-sm text-slate-600">{task.description || '-'}</p>
               {isTech && task.work_progress_note ? (
                 <p className="mt-1 text-xs text-slate-600">
@@ -500,6 +528,13 @@ export default function UserTasksPage() {
                     }}
                   >
                     <CheckCircle2 size={14} /> Selesai Pengerjaan
+                  </button>
+                </div>
+              )}
+              {canTechClaim(task) && (
+                <div className="mt-2">
+                  <button type="button" className="btn inline-flex items-center gap-1 bg-indigo-600 text-white hover:opacity-90" onClick={() => claimTask(task.id)}>
+                    Ambil Tugas
                   </button>
                 </div>
               )}
@@ -628,8 +663,14 @@ export default function UserTasksPage() {
             </div>
             <p className="text-sm text-slate-600">
               Teknisi: {detailTask.user_name}
-              {detailTask.created_by_name ? ` · Sales: ${detailTask.created_by_name}` : ''}
+              {detailTask.created_by_name ? ` · Dibuat oleh: ${detailTask.created_by_name} (${detailTask.created_by_role || 'admin'})` : ''}
             </p>
+            {detailTask.assignment_scope === 'all_technicians' ? (
+              <p className="text-sm text-slate-600">
+                <span className="font-medium">Pengambil tugas: </span>
+                {detailTask.claimed_by?.length ? detailTask.claimed_by.map((item) => item.user_name).join(', ') : 'Belum ada'}
+              </p>
+            ) : null}
             <p className="text-sm text-slate-600">{detailTask.description || '-'}</p>
             {detailTask.work_progress_note ? (
               <p className="text-sm text-slate-600">
@@ -877,11 +918,24 @@ export default function UserTasksPage() {
       <Modal
         open={openCreateModal}
         title={isSales ? 'Buat tugas untuk teknisi' : 'Buat tugas saya'}
-        onClose={() => setOpenCreateModal(false)}
+        onClose={() => {
+          setOpenCreateModal(false)
+          setAssignmentScope('single')
+          setSelectedTechnician(null)
+        }}
         maxWidth="max-w-4xl"
       >
         <form onSubmit={createTask} className="space-y-4">
           {isSales && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Jenis Penugasan *</label>
+              <select className="input" value={assignmentScope} onChange={(e) => setAssignmentScope(e.target.value)}>
+                <option value="single">Per teknisi (pilih 1)</option>
+                <option value="all_technicians">Semua teknisi (maks 2 pengambil)</option>
+              </select>
+            </div>
+          )}
+          {isSales && assignmentScope === 'single' && (
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-700">Teknisi (pegawai) *</label>
               <AsyncSelect
