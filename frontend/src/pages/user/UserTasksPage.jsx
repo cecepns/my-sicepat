@@ -25,7 +25,7 @@ export default function UserTasksPage() {
   const [search, setSearch] = useState('')
   const [rows, setRows] = useState([])
   const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0 })
-  const [form, setForm] = useState({ title: '', description: '', deadline_date: '', status: 'todo', location_source: 'manual', location_note: '' })
+  const [form, setForm] = useState({ title: '', description: '', deadline_date: '', status: 'todo', task_category: 'gangguan', location_source: 'manual', location_note: '' })
   const [files, setFiles] = useState([])
   const [dragActive, setDragActive] = useState(false)
   const [openCreateModal, setOpenCreateModal] = useState(false)
@@ -258,7 +258,7 @@ export default function UserTasksPage() {
       files.forEach((file) => formData.append('attachments', file))
       await client.post(ENDPOINTS.tasks, formData)
       toast.success('Tugas berhasil dibuat')
-      setForm({ title: '', description: '', deadline_date: '', status: 'todo', location_source: 'manual', location_note: '' })
+      setForm({ title: '', description: '', deadline_date: '', status: 'todo', task_category: 'gangguan', location_source: 'manual', location_note: '' })
       setFormLocation({ latitude: null, longitude: null })
       setFiles([])
       setSelectedTechnician(null)
@@ -477,6 +477,9 @@ export default function UserTasksPage() {
               <div className="flex items-center justify-between gap-2">
                 <p className="font-semibold">{task.title}</p>
                 <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${task.task_category === 'psb' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                    {task.task_category === 'psb' ? 'PSB' : 'GANGGUAN'}
+                  </span>
                   <button type="button" className="btn inline-flex items-center gap-1 bg-slate-700 text-white hover:opacity-90" onClick={() => setDetailTask(task)}>
                     <Search size={14} /> Detail
                   </button>
@@ -679,6 +682,11 @@ export default function UserTasksPage() {
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-slate-800">{detailTask.title}</h3>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getStatusBadge(detailTask.status)}`}>{detailTask.status}</span>
+            </div>
+            <div>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${detailTask.task_category === 'psb' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                {detailTask.task_category === 'psb' ? 'PSB' : 'GANGGUAN'}
+              </span>
             </div>
             <p className="text-sm text-slate-600">
               Teknisi: {detailTask.user_name}
@@ -990,6 +998,13 @@ export default function UserTasksPage() {
               <label className="mb-1 block text-sm font-medium text-slate-700">Status awal</label>
               <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
                 {statusOptions.map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Kategori Tugas</label>
+              <select className="input" value={form.task_category} onChange={(e) => setForm({ ...form, task_category: e.target.value })}>
+                <option value="gangguan">GANGGUAN</option>
+                <option value="psb">PSB</option>
               </select>
             </div>
           </div>

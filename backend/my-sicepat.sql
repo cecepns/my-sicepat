@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_by_id INT NULL,
   assignment_scope ENUM('single', 'all_technicians') NOT NULL DEFAULT 'single',
   max_claimants INT NOT NULL DEFAULT 2,
+  task_category ENUM('psb', 'gangguan') NOT NULL DEFAULT 'gangguan',
   title VARCHAR(200) NOT NULL,
   description TEXT NULL,
   deadline_date DATE NULL,

@@ -21,7 +21,7 @@ export default function AdminTasksPage() {
   const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0 })
   const [detailTask, setDetailTask] = useState(null)
   const [openCreateModal, setOpenCreateModal] = useState(false)
-  const [createForm, setCreateForm] = useState({ title: '', description: '', deadline_date: '', status: 'todo' })
+  const [createForm, setCreateForm] = useState({ title: '', description: '', deadline_date: '', status: 'todo', task_category: 'gangguan' })
   const [createUser, setCreateUser] = useState(null)
   const [createScope, setCreateScope] = useState('single')
   const [createFiles, setCreateFiles] = useState([])
@@ -99,7 +99,7 @@ export default function AdminTasksPage() {
   }
 
   const resetCreateState = () => {
-    setCreateForm({ title: '', description: '', deadline_date: '', status: 'todo' })
+    setCreateForm({ title: '', description: '', deadline_date: '', status: 'todo', task_category: 'gangguan' })
     setCreateUser(null)
     setCreateScope('single')
     setCreateFiles([])
@@ -118,6 +118,7 @@ export default function AdminTasksPage() {
       formData.append('description', createForm.description || '')
       formData.append('deadline_date', createForm.deadline_date || '')
       formData.append('status', createForm.status || 'todo')
+      formData.append('task_category', createForm.task_category || 'gangguan')
       formData.append('assignment_scope', createScope)
       if (createScope === 'single') formData.append('assigned_user_id', String(createUser.value))
       createFiles.forEach((file) => formData.append('attachments', file))
@@ -157,6 +158,9 @@ export default function AdminTasksPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="font-semibold">{task.title}</p>
               <div className="flex items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${task.task_category === 'psb' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                  {task.task_category === 'psb' ? 'PSB' : 'GANGGUAN'}
+                </span>
                 <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getStatusBadge(task.status)}`}>{task.status}</span>
                 <button className="btn inline-flex items-center gap-1 bg-[#11295a] text-white hover:opacity-90" onClick={() => setDetailTask(task)}>
                   <Search size={14} /> Detail
@@ -205,6 +209,11 @@ export default function AdminTasksPage() {
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-slate-800">{detailTask.title}</h3>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getStatusBadge(detailTask.status)}`}>{detailTask.status}</span>
+            </div>
+            <div>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${detailTask.task_category === 'psb' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+                {detailTask.task_category === 'psb' ? 'PSB' : 'GANGGUAN'}
+              </span>
             </div>
             <p className="text-sm text-slate-600">
               Teknisi: {detailTask.user_name}
@@ -325,6 +334,17 @@ export default function AdminTasksPage() {
                 <option value="in_progress">in_progress</option>
                 <option value="done">done</option>
                 <option value="cancelled">cancelled</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Kategori Tugas</label>
+              <select
+                className="input"
+                value={createForm.task_category}
+                onChange={(e) => setCreateForm({ ...createForm, task_category: e.target.value })}
+              >
+                <option value="gangguan">GANGGUAN</option>
+                <option value="psb">PSB</option>
               </select>
             </div>
           </div>

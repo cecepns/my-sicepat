@@ -48,6 +48,7 @@ const ensureTaskSchema = async () => {
   if (!existing.has('created_by_id')) alters.push('ADD COLUMN created_by_id INT NULL AFTER user_id')
   if (!existing.has('assignment_scope')) alters.push("ADD COLUMN assignment_scope ENUM('single','all_technicians') NOT NULL DEFAULT 'single' AFTER created_by_id")
   if (!existing.has('max_claimants')) alters.push('ADD COLUMN max_claimants INT NOT NULL DEFAULT 2 AFTER assignment_scope')
+  if (!existing.has('task_category')) alters.push("ADD COLUMN task_category ENUM('psb','gangguan') NOT NULL DEFAULT 'gangguan' AFTER max_claimants")
   if (!existing.has('started_at')) alters.push('ADD COLUMN started_at DATETIME NULL AFTER status')
   if (!existing.has('completed_at')) alters.push('ADD COLUMN completed_at DATETIME NULL AFTER started_at')
   if (!existing.has('start_latitude')) alters.push('ADD COLUMN start_latitude DECIMAL(10, 7) NULL AFTER completed_at')
@@ -244,10 +245,22 @@ app.get('/api/users/work-status', authMiddleware(), async (req, res) => {
       t.started_at AS active_task_started_at
      FROM users u
      LEFT JOIN tasks t
-       ON t.user_id = u.id
-      AND t.started_at IS NOT NULL
-      AND t.completed_at IS NULL
-      AND t.status = 'in_progress'
+       ON t.id = (
+         SELECT t1.id
+         FROM tasks t1
+         LEFT JOIN task_claims c1
+           ON c1.task_id = t1.id
+          AND c1.user_id = u.id
+         WHERE t1.started_at IS NOT NULL
+           AND t1.completed_at IS NULL
+           AND t1.status = 'in_progress'
+           AND (
+             t1.user_id = u.id
+             OR (t1.assignment_scope = 'all_technicians' AND c1.id IS NOT NULL)
+           )
+         ORDER BY t1.started_at DESC, t1.id DESC
+         LIMIT 1
+       )
      WHERE (u.name LIKE ? OR u.email LIKE ?)
        AND u.role = 'user'
      ORDER BY u.name ASC
@@ -437,12 +450,8 @@ app.get('/api/tasks', authMiddleware(), async (req, res) => {
       where.push('t.user_id = ?')
       params.push(user_id)
     }
-  } else if (role === 'sales') {
-    where.push('t.created_by_id = ?')
-    params.push(req.user.id)
   } else {
-    where.push('(t.user_id = ? OR t.assignment_scope = "all_technicians")')
-    params.push(req.user.id)
+    // Sales dan user dapat melihat semua tugas lintas pembuat/assignee
   }
   if (date) {
     where.push('DATE(t.created_at) = ?')
@@ -528,8 +537,10 @@ app.post('/api/tasks', authMiddleware(['admin', 'sales', 'user']), upload.array(
     assigned_user_id,
     user_id: bodyUserId,
     assignment_scope = 'single',
+    task_category = 'gangguan',
   } = req.body
   const safeScope = assignment_scope === 'all_technicians' ? 'all_technicians' : 'single'
+  const safeTaskCategory = task_category === 'psb' ? 'psb' : 'gangguan'
   const rawAssignee = assigned_user_id ?? bodyUserId
   const assigneeId = rawAssignee !== undefined && rawAssignee !== null && rawAssignee !== '' ? Number(rawAssignee) : null
 
@@ -567,13 +578,14 @@ app.post('/api/tasks', authMiddleware(['admin', 'sales', 'user']), upload.array(
 
   const [result] = await db.query(
     `INSERT INTO tasks
-      (user_id, created_by_id, assignment_scope, max_claimants, title, description, deadline_date, status, started_at, completed_at, start_latitude, start_longitude, start_location_note, start_location_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (user_id, created_by_id, assignment_scope, max_claimants, task_category, title, description, deadline_date, status, started_at, completed_at, start_latitude, start_longitude, start_location_note, start_location_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       targetUserId,
       createdById,
       safeScope,
       safeScope === 'all_technicians' ? defaultMaxClaimants : 2,
+      safeTaskCategory,
       title,
       description,
       deadline_date || null,
