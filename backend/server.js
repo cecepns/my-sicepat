@@ -76,6 +76,18 @@ const ensureTaskSchema = async () => {
     await db.query('ALTER TABLE task_attachments ADD COLUMN is_completion TINYINT(1) NOT NULL DEFAULT 0 AFTER file_size')
   }
 
+  const [settingsCols] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'settings'`,
+  )
+  const settingsExisting = new Set(settingsCols.map((c) => c.COLUMN_NAME))
+  if (!settingsExisting.has('default_task_max_claimants')) {
+    await db.query('ALTER TABLE settings ADD COLUMN default_task_max_claimants INT NOT NULL DEFAULT 2 AFTER check_out_time')
+  }
+  await db.query('UPDATE settings SET default_task_max_claimants = 2 WHERE default_task_max_claimants IS NULL OR default_task_max_claimants < 1')
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS task_claims (
       id INT PRIMARY KEY AUTO_INCREMENT,
@@ -180,16 +192,18 @@ app.get('/api/settings', authMiddleware(), async (_, res) => {
 
 app.put('/api/settings', authMiddleware(['admin']), async (req, res) => {
   const { office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time } = req.body
+  const incomingMaxClaimants = Number(req.body.default_task_max_claimants)
+  const defaultTaskMaxClaimants = Number.isFinite(incomingMaxClaimants) && incomingMaxClaimants > 0 ? incomingMaxClaimants : 2
   const [rows] = await db.query('SELECT id FROM settings LIMIT 1')
   if (rows.length) {
     await db.query(
-      `UPDATE settings SET office_name=?, office_latitude=?, office_longitude=?, office_radius_meter=?, check_in_time=?, check_out_time=?, updated_at=NOW() WHERE id=?`,
-      [office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, rows[0].id],
+      `UPDATE settings SET office_name=?, office_latitude=?, office_longitude=?, office_radius_meter=?, check_in_time=?, check_out_time=?, default_task_max_claimants=?, updated_at=NOW() WHERE id=?`,
+      [office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, defaultTaskMaxClaimants, rows[0].id],
     )
   } else {
     await db.query(
-      `INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time) VALUES (?, ?, ?, ?, ?, ?)`,
-      [office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time],
+      `INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, default_task_max_claimants) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, defaultTaskMaxClaimants],
     )
   }
   res.json({ message: 'Settings berhasil disimpan' })
@@ -521,6 +535,8 @@ app.post('/api/tasks', authMiddleware(['admin', 'sales', 'user']), upload.array(
 
   let targetUserId = null
   const createdById = req.user.id
+  const [[settingsRow]] = await db.query('SELECT default_task_max_claimants FROM settings LIMIT 1')
+  const defaultMaxClaimants = Math.max(Number(settingsRow?.default_task_max_claimants || 2), 1)
 
   if (req.user.role === 'sales') {
     if (safeScope === 'all_technicians') {
@@ -552,11 +568,12 @@ app.post('/api/tasks', authMiddleware(['admin', 'sales', 'user']), upload.array(
   const [result] = await db.query(
     `INSERT INTO tasks
       (user_id, created_by_id, assignment_scope, max_claimants, title, description, deadline_date, status, started_at, completed_at, start_latitude, start_longitude, start_location_note, start_location_source)
-     VALUES (?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       targetUserId,
       createdById,
       safeScope,
+      safeScope === 'all_technicians' ? defaultMaxClaimants : 2,
       title,
       description,
       deadline_date || null,

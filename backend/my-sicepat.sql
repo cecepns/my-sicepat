@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS settings (
   office_radius_meter INT NOT NULL DEFAULT 300,
   check_in_time TIME NOT NULL DEFAULT '08:00:00',
   check_out_time TIME NOT NULL DEFAULT '17:00:00',
+  default_task_max_claimants INT NOT NULL DEFAULT 2,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -99,8 +100,8 @@ CREATE TABLE IF NOT EXISTS task_attachments (
   CONSTRAINT fk_attachment_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
-INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time)
-SELECT 'Sicepat Office', -6.2087634, 106.845599, 300, '08:00:00', '17:00:00'
+INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, default_task_max_claimants)
+SELECT 'Sicepat Office', -6.2087634, 106.845599, 300, '08:00:00', '17:00:00', 2
 WHERE NOT EXISTS (SELECT 1 FROM settings);
 
 -- password admin123

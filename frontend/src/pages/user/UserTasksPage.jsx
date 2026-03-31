@@ -931,7 +931,7 @@ export default function UserTasksPage() {
               <label className="mb-1 block text-sm font-medium text-slate-700">Jenis Penugasan *</label>
               <select className="input" value={assignmentScope} onChange={(e) => setAssignmentScope(e.target.value)}>
                 <option value="single">Per teknisi (pilih 1)</option>
-                <option value="all_technicians">Semua teknisi (maks 2 pengambil)</option>
+                <option value="all_technicians">Semua teknisi (maks pengambil dari Settings)</option>
               </select>
             </div>
           )}

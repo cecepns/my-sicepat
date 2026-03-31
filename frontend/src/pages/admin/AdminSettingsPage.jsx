@@ -11,6 +11,7 @@ export default function AdminSettingsPage() {
     office_radius_meter: 300,
     check_in_time: '08:00:00',
     check_out_time: '17:00:00',
+    default_task_max_claimants: 2,
   })
   const [gettingLocation, setGettingLocation] = useState(false)
 
@@ -90,6 +91,16 @@ export default function AdminSettingsPage() {
       <div>
         <label className="mb-1 block text-sm font-medium text-slate-700">Jam Pulang</label>
         <input className="input" type="time" value={(form.check_out_time || '').slice(0, 5)} onChange={(e) => setForm({ ...form, check_out_time: `${e.target.value}:00` })} />
+      </div>
+      <div>
+        <label className="mb-1 block text-sm font-medium text-slate-700">Maks Teknisi per Tugas All Teknisi</label>
+        <input
+          className="input"
+          type="number"
+          min={1}
+          value={form.default_task_max_claimants || 2}
+          onChange={(e) => setForm({ ...form, default_task_max_claimants: e.target.value })}
+        />
       </div>
       <button className="btn-primary md:col-span-2 max-w-fit">Simpan Settings</button>
     </form>
