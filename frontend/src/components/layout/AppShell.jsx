@@ -6,15 +6,19 @@ const menuByRole = {
   user: [
     { to: '/user/attendance', label: 'Absensi' },
     { to: '/user/tasks', label: 'Tugas Saya' },
+    { to: '/user/customers', label: 'Pelanggan' },
     { to: '/user/users-status', label: 'Status User' },
   ],
   sales: [
     { to: '/sales/tasks', label: 'Tugas Teknisi' },
+    { to: '/sales/attendance', label: 'Absensi' },
+    { to: '/sales/customers', label: 'Pelanggan' },
     { to: '/sales/users-status', label: 'Status Teknisi' },
   ],
   admin: [
     { to: '/admin/dashboard', label: 'Dashboard' },
     { to: '/admin/users', label: 'Users' },
+    { to: '/admin/customers', label: 'Pelanggan' },
     { to: '/admin/settings', label: 'Settings' },
     { to: '/admin/attendance', label: 'Absensi' },
     { to: '/admin/tasks', label: 'Tugas Pegawai' },

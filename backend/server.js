@@ -104,6 +104,105 @@ const ensureTaskSchema = async () => {
   `)
 }
 
+const ensureCustomersLeavesLateSchema = async () => {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(150) NOT NULL,
+      phone VARCHAR(30) NOT NULL,
+      address TEXT NOT NULL,
+      status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS attendance_leaves (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT NOT NULL,
+      leave_date DATE NOT NULL,
+      leave_type ENUM('sick', 'permission_late') NOT NULL,
+      note TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_attendance_leave_user_date (user_id, leave_date),
+      KEY idx_leave_date (leave_date),
+      CONSTRAINT fk_attendance_leaves_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `)
+
+  const [attLateCols] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'attendance'`,
+  )
+  const attLateExisting = new Set(attLateCols.map((c) => c.COLUMN_NAME))
+  const attAlters = []
+  if (!attLateExisting.has('late_minutes')) attAlters.push('ADD COLUMN late_minutes INT NULL AFTER admin_note')
+  if (!attLateExisting.has('late_points')) attAlters.push('ADD COLUMN late_points INT NOT NULL DEFAULT 0 AFTER late_minutes')
+  if (attAlters.length) await db.query(`ALTER TABLE attendance ${attAlters.join(', ')}`)
+
+  const [settingsLateCols] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'settings'`,
+  )
+  const settingsLateExisting = new Set(settingsLateCols.map((c) => c.COLUMN_NAME))
+  if (!settingsLateExisting.has('late_penalty_per_point_rupiah')) {
+    await db.query(
+      'ALTER TABLE settings ADD COLUMN late_penalty_per_point_rupiah INT NOT NULL DEFAULT 10000 AFTER default_task_max_claimants',
+    )
+  }
+  await db.query('UPDATE settings SET late_penalty_per_point_rupiah = 10000 WHERE late_penalty_per_point_rupiah IS NULL OR late_penalty_per_point_rupiah < 0')
+}
+
+const formatDateYmd = (d) => {
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10)
+  const dt = d instanceof Date ? d : new Date(d)
+  if (Number.isNaN(dt.getTime())) return String(d).slice(0, 10)
+  const y = dt.getFullYear()
+  const m = String(dt.getMonth() + 1).padStart(2, '0')
+  const day = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const parseScheduleDateTime = (dateStr, checkInTimeVal) => {
+  if (!dateStr || !checkInTimeVal) return null
+  const t = String(checkInTimeVal)
+  const parts = t.split(':').map((p) => Number(p))
+  const h = parts[0] || 0
+  const mi = parts[1] || 0
+  const se = parts[2] || 0
+  const [y, mo, da] = dateStr.split('-').map(Number)
+  return new Date(y, mo - 1, da, h, mi, se, 0)
+}
+
+const computeLateMinutesAndPoints = (checkInDate, scheduleTimeVal, hasLeaveWaive) => {
+  if (!checkInDate) return { late_minutes: null, late_points: 0 }
+  const sched = parseScheduleDateTime(formatDateYmd(checkInDate), scheduleTimeVal)
+  if (!sched) return { late_minutes: null, late_points: 0 }
+  const actual = checkInDate instanceof Date ? checkInDate : new Date(checkInDate)
+  if (actual <= sched) return { late_minutes: 0, late_points: 0 }
+  const lateMinutes = Math.floor((actual - sched) / 60000)
+  if (hasLeaveWaive) return { late_minutes: lateMinutes, late_points: 0 }
+  const latePoints = lateMinutes > 60 ? 2 : 1
+  return { late_minutes: lateMinutes, late_points: latePoints }
+}
+
+const fetchLeaveWaiveForUserDate = async (userId, dateStr) => {
+  const [rows] = await db.query('SELECT id FROM attendance_leaves WHERE user_id=? AND leave_date=? LIMIT 1', [userId, dateStr])
+  return Boolean(rows.length)
+}
+
+const applyLatePointsToAttendanceRow = async (attendanceId, userId, attendanceDateStr, checkInMysql) => {
+  const [[settingsRow]] = await db.query('SELECT check_in_time FROM settings LIMIT 1')
+  const waive = await fetchLeaveWaiveForUserDate(userId, attendanceDateStr)
+  const checkInDt = checkInMysql ? new Date(checkInMysql) : null
+  const { late_minutes, late_points } = computeLateMinutesAndPoints(checkInDt, settingsRow?.check_in_time, waive)
+  await db.query('UPDATE attendance SET late_minutes=?, late_points=? WHERE id=?', [late_minutes, late_points, attendanceId])
+}
+
 const insertTaskAttachments = async (taskId, files, isCompletion) => {
   if (!files?.length) return
   const values = files.map((file) => [taskId, file.originalname, file.filename, file.mimetype, file.size, isCompletion ? 1 : 0])
@@ -195,16 +294,38 @@ app.put('/api/settings', authMiddleware(['admin']), async (req, res) => {
   const { office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time } = req.body
   const incomingMaxClaimants = Number(req.body.default_task_max_claimants)
   const defaultTaskMaxClaimants = Number.isFinite(incomingMaxClaimants) && incomingMaxClaimants > 0 ? incomingMaxClaimants : 2
+  const incomingPenalty = Number(req.body.late_penalty_per_point_rupiah)
+  const latePenaltyPerPoint =
+    Number.isFinite(incomingPenalty) && incomingPenalty >= 0 ? Math.floor(incomingPenalty) : 10000
   const [rows] = await db.query('SELECT id FROM settings LIMIT 1')
   if (rows.length) {
     await db.query(
-      `UPDATE settings SET office_name=?, office_latitude=?, office_longitude=?, office_radius_meter=?, check_in_time=?, check_out_time=?, default_task_max_claimants=?, updated_at=NOW() WHERE id=?`,
-      [office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, defaultTaskMaxClaimants, rows[0].id],
+      `UPDATE settings SET office_name=?, office_latitude=?, office_longitude=?, office_radius_meter=?, check_in_time=?, check_out_time=?, default_task_max_claimants=?, late_penalty_per_point_rupiah=?, updated_at=NOW() WHERE id=?`,
+      [
+        office_name,
+        office_latitude,
+        office_longitude,
+        office_radius_meter,
+        check_in_time,
+        check_out_time,
+        defaultTaskMaxClaimants,
+        latePenaltyPerPoint,
+        rows[0].id,
+      ],
     )
   } else {
     await db.query(
-      `INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, default_task_max_claimants) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, defaultTaskMaxClaimants],
+      `INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, default_task_max_claimants, late_penalty_per_point_rupiah) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        office_name,
+        office_latitude,
+        office_longitude,
+        office_radius_meter,
+        check_in_time,
+        check_out_time,
+        defaultTaskMaxClaimants,
+        latePenaltyPerPoint,
+      ],
     )
   }
   res.json({ message: 'Settings berhasil disimpan' })
@@ -323,9 +444,11 @@ app.get('/api/attendance', authMiddleware(), async (req, res) => {
     params.push(date)
   }
   const whereClause = where.join(' AND ')
-  const query = `SELECT a.*, u.name AS user_name, u.email AS user_email
+  const query = `SELECT a.*, u.name AS user_name, u.email AS user_email, u.role AS user_role,
+                 al.leave_type AS leave_type, al.note AS leave_note
                  FROM attendance a
                  JOIN users u ON u.id = a.user_id
+                 LEFT JOIN attendance_leaves al ON al.user_id = a.user_id AND al.leave_date = a.attendance_date
                  WHERE ${whereClause}
                  ORDER BY a.attendance_date DESC, a.id DESC
                  LIMIT ? OFFSET ?`
@@ -359,12 +482,15 @@ app.post('/api/attendance/check-in', authMiddleware(), async (req, res) => {
   const [existingRows] = await db.query('SELECT id FROM attendance WHERE user_id = ? AND DATE(attendance_date) = ?', [req.user.id, dateString])
   if (existingRows.length) return res.status(400).json({ message: 'Check-in hari ini sudah ada' })
 
-  await db.query(
+  const [ins] = await db.query(
     `INSERT INTO attendance
      (user_id, attendance_date, check_in_time, check_in_latitude, check_in_longitude, gps_status_check_in, location_note_check_in, distance_km_check_in, in_radius_check_in)
      VALUES (?, CURDATE(), NOW(), ?, ?, ?, ?, ?, ?)`,
     [req.user.id, latitude, longitude, gpsStatus, location_note, distanceKm, withinOfficeRadius],
   )
+  const [insertedRows] = await db.query('SELECT id, attendance_date, check_in_time FROM attendance WHERE id=?', [ins.insertId])
+  const row = insertedRows[0]
+  await applyLatePointsToAttendanceRow(row.id, req.user.id, formatDateYmd(row.attendance_date), row.check_in_time)
   res.json({ message: 'Check-in berhasil' })
 })
 
@@ -409,6 +535,13 @@ app.post('/api/attendance/admin-mark', authMiddleware(['admin']), async (req, re
      ON DUPLICATE KEY UPDATE check_in_time=VALUES(check_in_time), check_out_time=VALUES(check_out_time), admin_note=VALUES(admin_note)`,
     [user_id, attendance_date, check_in_time, check_out_time, note],
   )
+  const [arows] = await db.query('SELECT id, user_id, attendance_date, check_in_time FROM attendance WHERE user_id=? AND attendance_date=? LIMIT 1', [
+    user_id,
+    attendance_date,
+  ])
+  if (arows.length && arows[0].check_in_time) {
+    await applyLatePointsToAttendanceRow(arows[0].id, arows[0].user_id, formatDateYmd(arows[0].attendance_date), arows[0].check_in_time)
+  }
   res.json({ message: 'Absen user berhasil disimpan' })
 })
 
@@ -427,6 +560,12 @@ app.put('/api/attendance/:id', authMiddleware(['admin']), async (req, res) => {
      WHERE id=?`,
     [user_id, attendance_date, check_in_time, check_out_time, note, req.params.id],
   )
+  const [updated] = await db.query('SELECT id, user_id, attendance_date, check_in_time FROM attendance WHERE id=?', [req.params.id])
+  if (updated.length && updated[0].check_in_time) {
+    await applyLatePointsToAttendanceRow(updated[0].id, updated[0].user_id, formatDateYmd(updated[0].attendance_date), updated[0].check_in_time)
+  } else if (updated.length) {
+    await db.query('UPDATE attendance SET late_minutes=NULL, late_points=0 WHERE id=?', [req.params.id])
+  }
   res.json({ message: 'Absensi berhasil diupdate' })
 })
 
@@ -791,6 +930,198 @@ app.post('/api/tasks/:id/claim', authMiddleware(['user']), async (req, res) => {
   }
 })
 
+app.get('/api/customers', authMiddleware(), async (req, res) => {
+  const { search = '', page = 1, limit = 10, status = '' } = req.query
+  const pg = toPagination(page, limit)
+  const offset = (pg.page - 1) * pg.limit
+  const where = ['(c.name LIKE ? OR c.phone LIKE ? OR c.address LIKE ?)']
+  const params = [`%${search}%`, `%${search}%`, `%${search}%`]
+  if (status === 'active' || status === 'inactive') {
+    where.push('c.status = ?')
+    params.push(status)
+  }
+  const whereClause = where.join(' AND ')
+  const [rows] = await db.query(
+    `SELECT c.* FROM customers c WHERE ${whereClause} ORDER BY c.id DESC LIMIT ? OFFSET ?`,
+    [...params, pg.limit, offset],
+  )
+  const [countRows] = await db.query(`SELECT COUNT(*) AS total FROM customers c WHERE ${whereClause}`, params)
+  res.json({ data: rows, total: countRows[0].total, page: pg.page, limit: pg.limit })
+})
+
+app.post('/api/customers', authMiddleware(), async (req, res) => {
+  const { name, phone, address, status = 'active' } = req.body
+  const nm = String(name || '').trim()
+  const ph = String(phone || '').trim()
+  const addr = String(address || '').trim()
+  if (!nm || !ph || !addr) return res.status(400).json({ message: 'Nama, nomor telepon, dan alamat wajib diisi' })
+  const st = status === 'inactive' ? 'inactive' : 'active'
+  await db.query('INSERT INTO customers (name, phone, address, status) VALUES (?, ?, ?, ?)', [nm, ph, addr, st])
+  res.json({ message: 'Pelanggan berhasil ditambah' })
+})
+
+app.put('/api/customers/:id', authMiddleware(), async (req, res) => {
+  const { name, phone, address, status = 'active' } = req.body
+  const nm = String(name || '').trim()
+  const ph = String(phone || '').trim()
+  const addr = String(address || '').trim()
+  if (!nm || !ph || !addr) return res.status(400).json({ message: 'Nama, nomor telepon, dan alamat wajib diisi' })
+  const st = status === 'inactive' ? 'inactive' : 'active'
+  const [r] = await db.query('UPDATE customers SET name=?, phone=?, address=?, status=? WHERE id=?', [nm, ph, addr, st, req.params.id])
+  if (!r.affectedRows) return res.status(404).json({ message: 'Pelanggan tidak ditemukan' })
+  res.json({ message: 'Pelanggan berhasil diupdate' })
+})
+
+app.delete('/api/customers/:id', authMiddleware(), async (req, res) => {
+  const [r] = await db.query('DELETE FROM customers WHERE id=?', [req.params.id])
+  if (!r.affectedRows) return res.status(404).json({ message: 'Pelanggan tidak ditemukan' })
+  res.json({ message: 'Pelanggan berhasil dihapus' })
+})
+
+const currentYearMonth = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+app.get('/api/attendance/leave', authMiddleware(), async (req, res) => {
+  const { search = '', page = 1, limit = 10, user_id = '', from = '', to = '' } = req.query
+  const pg = toPagination(page, limit)
+  const offset = (pg.page - 1) * pg.limit
+  const where = ['1=1']
+  const params = []
+  if (req.user.role !== 'admin') {
+    where.push('l.user_id = ?')
+    params.push(req.user.id)
+  } else if (user_id) {
+    where.push('l.user_id = ?')
+    params.push(user_id)
+  }
+  if (from) {
+    where.push('l.leave_date >= ?')
+    params.push(from)
+  }
+  if (to) {
+    where.push('l.leave_date <= ?')
+    params.push(to)
+  }
+  if (search) {
+    where.push('(u.name LIKE ? OR u.email LIKE ? OR l.note LIKE ?)')
+    const q = `%${search}%`
+    params.push(q, q, q)
+  }
+  const whereClause = where.join(' AND ')
+  const [rows] = await db.query(
+    `SELECT l.*, u.name AS user_name, u.email AS user_email, u.role AS user_role
+     FROM attendance_leaves l
+     JOIN users u ON u.id = l.user_id
+     WHERE ${whereClause}
+     ORDER BY l.leave_date DESC, l.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pg.limit, offset],
+  )
+  const [countRows] = await db.query(
+    `SELECT COUNT(*) AS total
+     FROM attendance_leaves l
+     JOIN users u ON u.id = l.user_id
+     WHERE ${whereClause}`,
+    params,
+  )
+  res.json({ data: rows, total: countRows[0].total, page: pg.page, limit: pg.limit })
+})
+
+app.post('/api/attendance/leave', authMiddleware(), async (req, res) => {
+  const { leave_date, leave_type, note } = req.body
+  const safeType = leave_type === 'permission_late' ? 'permission_late' : 'sick'
+  const n = String(note || '').trim()
+  if (!n) return res.status(400).json({ message: 'Keterangan izin / sakit / izin telat wajib diisi' })
+  if (!leave_date) return res.status(400).json({ message: 'Tanggal wajib diisi' })
+  await db.query(
+    `INSERT INTO attendance_leaves (user_id, leave_date, leave_type, note)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE leave_type = VALUES(leave_type), note = VALUES(note)`,
+    [req.user.id, leave_date, safeType, n],
+  )
+  const [att] = await db.query(
+    'SELECT id, check_in_time, user_id, attendance_date FROM attendance WHERE user_id=? AND attendance_date=? LIMIT 1',
+    [req.user.id, leave_date],
+  )
+  if (att.length && att[0].check_in_time) {
+    await applyLatePointsToAttendanceRow(att[0].id, att[0].user_id, formatDateYmd(att[0].attendance_date), att[0].check_in_time)
+  }
+  res.json({ message: 'Izin berhasil dicatat (0 poin telat untuk hari ini bila ada keterlambatan)' })
+})
+
+app.delete('/api/attendance/leave/:id', authMiddleware(), async (req, res) => {
+  const [rows] = await db.query('SELECT * FROM attendance_leaves WHERE id=?', [req.params.id])
+  if (!rows.length) return res.status(404).json({ message: 'Data izin tidak ditemukan' })
+  if (req.user.role !== 'admin' && rows[0].user_id !== req.user.id) return res.status(403).json({ message: 'Forbidden' })
+  const { user_id, leave_date } = rows[0]
+  await db.query('DELETE FROM attendance_leaves WHERE id=?', [req.params.id])
+  const [att] = await db.query(
+    'SELECT id, check_in_time, user_id, attendance_date FROM attendance WHERE user_id=? AND attendance_date=? LIMIT 1',
+    [user_id, leave_date],
+  )
+  if (att.length && att[0].check_in_time) {
+    await applyLatePointsToAttendanceRow(att[0].id, att[0].user_id, formatDateYmd(att[0].attendance_date), att[0].check_in_time)
+  }
+  res.json({ message: 'Izin dihapus' })
+})
+
+app.get('/api/attendance/late-points/me', authMiddleware(), async (req, res) => {
+  const ym = req.query.year_month && /^\d{4}-\d{2}$/.test(req.query.year_month) ? req.query.year_month : currentYearMonth()
+  const [[sumRow]] = await db.query(
+    `SELECT COALESCE(SUM(late_points), 0) AS total_points
+     FROM attendance
+     WHERE user_id = ? AND DATE_FORMAT(attendance_date, '%Y-%m') = ?`,
+    [req.user.id, ym],
+  )
+  const [[settingsRow]] = await db.query('SELECT late_penalty_per_point_rupiah FROM settings LIMIT 1')
+  const perPoint = Number(settingsRow?.late_penalty_per_point_rupiah ?? 10000)
+  const totalPoints = Number(sumRow?.total_points || 0)
+  const [breakdown] = await db.query(
+    `SELECT id, attendance_date, check_in_time, late_minutes, late_points
+     FROM attendance
+     WHERE user_id = ? AND DATE_FORMAT(attendance_date, '%Y-%m') = ? AND late_points > 0
+     ORDER BY attendance_date DESC, id DESC`,
+    [req.user.id, ym],
+  )
+  res.json({
+    year_month: ym,
+    total_points: totalPoints,
+    penalty_per_point_rupiah: perPoint,
+    estimated_penalty_rupiah: totalPoints * perPoint,
+    breakdown,
+    rules: {
+      late_within_hour: 'Telat (≤ 1 jam dari jam masuk) = 1 poin',
+      late_over_hour: 'Telat > 1 jam = 2 poin',
+      leave_types: 'Izin sakit, izin telat (dengan keterangan) = 0 poin',
+    },
+  })
+})
+
+app.get('/api/attendance/late-points/summary', authMiddleware(['admin']), async (req, res) => {
+  const ym = req.query.year_month && /^\d{4}-\d{2}$/.test(req.query.year_month) ? req.query.year_month : currentYearMonth()
+  const [rows] = await db.query(
+    `SELECT u.id, u.name, u.email, u.role, COALESCE(SUM(a.late_points), 0) AS total_points
+     FROM users u
+     LEFT JOIN attendance a ON a.user_id = u.id AND DATE_FORMAT(a.attendance_date, '%Y-%m') = ?
+     WHERE u.is_active = 1
+     GROUP BY u.id, u.name, u.email, u.role
+     ORDER BY total_points DESC, u.name ASC`,
+    [ym],
+  )
+  const [[settingsRow]] = await db.query('SELECT late_penalty_per_point_rupiah FROM settings LIMIT 1')
+  const perPoint = Number(settingsRow?.late_penalty_per_point_rupiah ?? 10000)
+  res.json({ year_month: ym, penalty_per_point_rupiah: perPoint, data: rows })
+})
+
+app.post('/api/attendance/late-points/reset-month', authMiddleware(['admin']), async (req, res) => {
+  const ym =
+    req.body?.year_month && /^\d{4}-\d{2}$/.test(String(req.body.year_month)) ? String(req.body.year_month) : currentYearMonth()
+  const [r] = await db.query(`UPDATE attendance SET late_points = 0 WHERE DATE_FORMAT(attendance_date, '%Y-%m') = ?`, [ym])
+  res.json({ message: `Poin telat untuk periode ${ym} telah direset`, affected_rows: r.affectedRows })
+})
+
 app.get('/api/select/users', authMiddleware(['admin', 'sales']), async (req, res) => {
   const { search = '' } = req.query
   const [rows] = await db.query('SELECT id, name FROM users WHERE role="user" AND name LIKE ? ORDER BY name ASC LIMIT 20', [`%${search}%`])
@@ -802,6 +1133,7 @@ app.use((error, _, res, __) => {
 })
 
 ensureTaskSchema()
+  .then(() => ensureCustomersLeavesLateSchema())
   .then(() => {
     app.listen(PORT, () => {
       console.log(`API running on http://localhost:${PORT}`)

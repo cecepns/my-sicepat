@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS settings (
   check_in_time TIME NOT NULL DEFAULT '08:00:00',
   check_out_time TIME NOT NULL DEFAULT '17:00:00',
   default_task_max_claimants INT NOT NULL DEFAULT 2,
+  late_penalty_per_point_rupiah INT NOT NULL DEFAULT 10000,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -43,9 +44,33 @@ CREATE TABLE IF NOT EXISTS attendance (
   in_radius_check_in TINYINT(1) NULL,
   in_radius_check_out TINYINT(1) NULL,
   admin_note TEXT NULL,
+  late_minutes INT NULL,
+  late_points INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_attendance_user_date (user_id, attendance_date),
   CONSTRAINT fk_attendance_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS customers (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(150) NOT NULL,
+  phone VARCHAR(30) NOT NULL,
+  address TEXT NOT NULL,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS attendance_leaves (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  leave_date DATE NOT NULL,
+  leave_type ENUM('sick', 'permission_late') NOT NULL,
+  note TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_attendance_leave_user_date (user_id, leave_date),
+  KEY idx_leave_date (leave_date),
+  CONSTRAINT fk_attendance_leaves_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -101,8 +126,8 @@ CREATE TABLE IF NOT EXISTS task_attachments (
   CONSTRAINT fk_attachment_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
-INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, default_task_max_claimants)
-SELECT 'Sicepat Office', -6.2087634, 106.845599, 300, '08:00:00', '17:00:00', 2
+INSERT INTO settings (office_name, office_latitude, office_longitude, office_radius_meter, check_in_time, check_out_time, default_task_max_claimants, late_penalty_per_point_rupiah)
+SELECT 'Sicepat Office', -6.2087634, 106.845599, 300, '08:00:00', '17:00:00', 2, 10000
 WHERE NOT EXISTS (SELECT 1 FROM settings);
 
 -- password admin123

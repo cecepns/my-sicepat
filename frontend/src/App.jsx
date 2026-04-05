@@ -9,6 +9,7 @@ import AdminSettingsPage from './pages/admin/AdminSettingsPage'
 import AdminAttendancePage from './pages/admin/AdminAttendancePage'
 import AdminTasksPage from './pages/admin/AdminTasksPage'
 import UsersWorkStatusPage from './pages/shared/UsersWorkStatusPage'
+import CustomersPage from './pages/shared/CustomersPage'
 import AppShell from './components/layout/AppShell'
 
 function Protected({ roles, children }) {
@@ -43,6 +44,7 @@ export default function App() {
       >
         <Route path="attendance" element={<UserAttendancePage />} />
         <Route path="tasks" element={<UserTasksPage />} />
+        <Route path="customers" element={<CustomersPage />} />
         <Route path="users-status" element={<UsersWorkStatusPage />} />
       </Route>
 
@@ -55,6 +57,8 @@ export default function App() {
         }
       >
         <Route path="tasks" element={<UserTasksPage />} />
+        <Route path="attendance" element={<UserAttendancePage />} />
+        <Route path="customers" element={<CustomersPage />} />
         <Route path="users-status" element={<UsersWorkStatusPage />} />
       </Route>
 
@@ -71,6 +75,7 @@ export default function App() {
         <Route path="settings" element={<AdminSettingsPage />} />
         <Route path="attendance" element={<AdminAttendancePage />} />
         <Route path="tasks" element={<AdminTasksPage />} />
+        <Route path="customers" element={<CustomersPage />} />
         <Route path="users-status" element={<UsersWorkStatusPage />} />
       </Route>
     </Routes>

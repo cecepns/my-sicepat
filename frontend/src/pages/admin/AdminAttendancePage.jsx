@@ -9,6 +9,8 @@ import Pagination from '../../components/common/Pagination'
 import Modal from '../../components/common/Modal'
 import useDebounce from '../../hooks/useDebounce'
 
+const leaveTypeLabel = (t) => (t === 'permission_late' ? 'Izin terlambat' : 'Izin sakit / tidak masuk')
+
 export default function AdminAttendancePage() {
   const [search, setSearch] = useState('')
   const [date, setDate] = useState(null)
@@ -19,7 +21,13 @@ export default function AdminAttendancePage() {
   const [markForm, setMarkForm] = useState({ user_id: '', attendance_date: '', check_in_time: '', check_out_time: '', note: '' })
   const [openMarkModal, setOpenMarkModal] = useState(false)
   const [editingId, setEditingId] = useState(null)
+  const [lateMonth, setLateMonth] = useState(() => dayjs().format('YYYY-MM'))
+  const [lateSummary, setLateSummary] = useState(null)
+  const [leaveSearch, setLeaveSearch] = useState('')
+  const [leaveRows, setLeaveRows] = useState([])
+  const [leaveMeta, setLeaveMeta] = useState({ page: 1, limit: 10, total: 0 })
   const debouncedSearch = useDebounce(search, 1000)
+  const debouncedLeaveSearch = useDebounce(leaveSearch, 600)
 
   const loadUsers = async (inputValue) => {
     const { data } = await client.get(ENDPOINTS.selectUsers, { params: { search: inputValue || '' } })
@@ -49,6 +57,54 @@ export default function AdminAttendancePage() {
     }
     fetchSettings()
   }, [])
+
+  const fetchLateSummary = useCallback(async () => {
+    const { data } = await client.get(ENDPOINTS.attendanceLatePointsSummary, { params: { year_month: lateMonth } })
+    setLateSummary(data)
+  }, [lateMonth])
+
+  useEffect(() => {
+    fetchLateSummary()
+  }, [fetchLateSummary])
+
+  const fetchLeaves = useCallback(
+    async (page = 1) => {
+      const { data } = await client.get(ENDPOINTS.attendanceLeave, {
+        params: { page, limit: 10, search: debouncedLeaveSearch },
+      })
+      setLeaveRows(data.data)
+      setLeaveMeta({ page: data.page, limit: data.limit, total: data.total })
+    },
+    [debouncedLeaveSearch],
+  )
+
+  useEffect(() => {
+    fetchLeaves(1)
+  }, [fetchLeaves])
+
+  const resetLateMonth = async () => {
+    if (!window.confirm(`Reset semua poin telat untuk periode ${lateMonth}? Menit telat tetap tersimpan; hanya kolom poin yang di-nolkan.`)) return
+    try {
+      const { data } = await client.post(ENDPOINTS.attendanceLatePointsResetMonth, { year_month: lateMonth })
+      toast.success(data.message || 'Poin direset')
+      fetchLateSummary()
+      fetchData(meta.page)
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Gagal reset poin')
+    }
+  }
+
+  const deleteLeaveAdmin = async (id) => {
+    if (!window.confirm('Hapus catatan izin ini?')) return
+    try {
+      await client.delete(`${ENDPOINTS.attendanceLeave}/${id}`)
+      toast.success('Izin dihapus')
+      fetchLeaves(leaveMeta.page)
+      fetchData(meta.page)
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Gagal hapus izin')
+    }
+  }
 
   const getLateLabel = (row) => {
     if (!settings?.check_in_time || !row.check_in_time) return '-'
@@ -90,6 +146,7 @@ export default function AdminAttendancePage() {
       setSelectedUser(null)
       setMarkForm({ user_id: '', attendance_date: '', check_in_time: '', check_out_time: '', note: '' })
       fetchData(1)
+      fetchLateSummary()
     } catch (error) {
       toast.error(error.response?.data?.message || 'Gagal simpan absensi')
     }
@@ -114,6 +171,7 @@ export default function AdminAttendancePage() {
       await client.delete(`${ENDPOINTS.attendance}/${id}`)
       toast.success('Absensi berhasil dihapus')
       fetchData(1)
+      fetchLateSummary()
     } catch (error) {
       toast.error(error.response?.data?.message || 'Gagal menghapus absensi')
     }
@@ -158,6 +216,9 @@ export default function AdminAttendancePage() {
                 <th className="px-4 py-3">Check-out</th>
                 <th className="px-4 py-3">Jarak ke Kantor</th>
                 <th className="px-4 py-3">Status Check-in</th>
+                <th className="px-4 py-3">Menit telat</th>
+                <th className="px-4 py-3">Poin</th>
+                <th className="px-4 py-3">Izin (keterangan)</th>
                 <th className="px-4 py-3">Aksi</th>
               </tr>
             </thead>
@@ -184,6 +245,26 @@ export default function AdminAttendancePage() {
                       <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">{lateLabel}</span>
                     )}
                   </td>
+                  <td className="px-4 py-3 text-slate-600">{r.late_minutes != null ? `${r.late_minutes} m` : '-'}</td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        r.late_points > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {r.late_points ?? 0}
+                    </span>
+                  </td>
+                  <td className="max-w-[220px] px-4 py-3 text-xs text-slate-600">
+                    {r.leave_type ? (
+                      <>
+                        <span className="font-semibold text-[#11295a]">{leaveTypeLabel(r.leave_type)}</span>
+                        {r.leave_note ? <span className="mt-0.5 block text-slate-600">{r.leave_note}</span> : null}
+                      </>
+                    ) : (
+                      '-'
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
                       <button className="btn bg-amber-500 text-white hover:opacity-90" onClick={() => handleEdit(r)}>
@@ -203,6 +284,97 @@ export default function AdminAttendancePage() {
           </table>
         </div>
         <Pagination {...meta} onChange={fetchData} />
+      </div>
+
+      <div className="card">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">Ringkasan poin telat (semua user)</h2>
+            <p className="text-sm text-slate-500">
+              Telat ≤ 1 jam = 1 poin; telat &gt; 1 jam = 2 poin. Izin dengan keterangan = 0 poin. Reset bulanan mengosongkan poin di periode yang dipilih.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Periode</label>
+              <input className="input w-40" type="month" value={lateMonth} onChange={(e) => setLateMonth(e.target.value)} />
+            </div>
+            <button type="button" className="btn bg-rose-600 text-white hover:opacity-90" onClick={resetLateMonth}>
+              Reset poin bulan ini
+            </button>
+          </div>
+        </div>
+        {lateSummary && (
+          <div className="overflow-x-auto rounded-xl border border-slate-100">
+            <table className="w-full min-w-[480px] text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-3">Nama</th>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">Role</th>
+                  <th className="px-4 py-3">Total poin</th>
+                  <th className="px-4 py-3">Estimasi (Rp)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {lateSummary.data.map((u) => (
+                  <tr key={u.id} className="hover:bg-slate-50/80">
+                    <td className="px-4 py-3 font-medium text-slate-700">{u.name}</td>
+                    <td className="px-4 py-3 text-slate-600">{u.email}</td>
+                    <td className="px-4 py-3 text-slate-600">{u.role}</td>
+                    <td className="px-4 py-3 font-semibold text-amber-800">{u.total_points}</td>
+                    <td className="px-4 py-3 text-slate-700">
+                      Rp {(Number(u.total_points) * Number(lateSummary.penalty_per_point_rupiah || 0)).toLocaleString('id-ID')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-slate-800">Izin sakit & izin terlambat (semua karyawan)</h2>
+          <input
+            className="input max-w-xs"
+            placeholder="Cari nama, email, keterangan..."
+            value={leaveSearch}
+            onChange={(e) => setLeaveSearch(e.target.value)}
+          />
+        </div>
+        <div className="overflow-x-auto rounded-xl border border-slate-100">
+          <table className="w-full min-w-[800px] text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Tanggal</th>
+                <th className="px-4 py-3">User</th>
+                <th className="px-4 py-3">Role</th>
+                <th className="px-4 py-3">Jenis</th>
+                <th className="px-4 py-3">Keterangan</th>
+                <th className="px-4 py-3">Aksi</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {leaveRows.map((r) => (
+                <tr key={r.id} className="hover:bg-slate-50/80">
+                  <td className="px-4 py-3 font-medium text-slate-700">{dayjs(r.leave_date).format('DD MMM YYYY')}</td>
+                  <td className="px-4 py-3 text-slate-600">{r.user_name}</td>
+                  <td className="px-4 py-3 text-slate-600">{r.user_role}</td>
+                  <td className="px-4 py-3 text-slate-600">{leaveTypeLabel(r.leave_type)}</td>
+                  <td className="max-w-md px-4 py-3 text-slate-600">{r.note}</td>
+                  <td className="px-4 py-3">
+                    <button type="button" className="btn border border-rose-200 text-rose-700" onClick={() => deleteLeaveAdmin(r.id)}>
+                      Hapus
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pagination {...leaveMeta} onChange={fetchLeaves} />
       </div>
 
       <Modal

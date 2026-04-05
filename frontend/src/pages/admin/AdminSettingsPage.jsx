@@ -12,6 +12,7 @@ export default function AdminSettingsPage() {
     check_in_time: '08:00:00',
     check_out_time: '17:00:00',
     default_task_max_claimants: 2,
+    late_penalty_per_point_rupiah: 10000,
   })
   const [gettingLocation, setGettingLocation] = useState(false)
 
@@ -101,6 +102,17 @@ export default function AdminSettingsPage() {
           value={form.default_task_max_claimants || 2}
           onChange={(e) => setForm({ ...form, default_task_max_claimants: e.target.value })}
         />
+      </div>
+      <div>
+        <label className="mb-1 block text-sm font-medium text-slate-700">Nominal potongan per poin telat (Rp)</label>
+        <input
+          className="input"
+          type="number"
+          min={0}
+          value={form.late_penalty_per_point_rupiah ?? 10000}
+          onChange={(e) => setForm({ ...form, late_penalty_per_point_rupiah: e.target.value })}
+        />
+        <p className="mt-1 text-xs text-slate-500">Digunakan untuk estimasi potongan di laporan poin telat (1 poin = telat ≤ 1 jam, 2 poin = telat &gt; 1 jam).</p>
       </div>
       <button className="btn-primary md:col-span-2 max-w-fit">Simpan Settings</button>
     </form>
