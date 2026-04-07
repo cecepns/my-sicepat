@@ -104,6 +104,58 @@ const ensureTaskSchema = async () => {
   `)
 }
 
+/** Kolom telat di attendance — dipanggil saat startup dan (cadelayanan) di setiap request agar produksi tidak crash bila migrasi boot terlewat. */
+const ensureAttendanceLateColumns = async () => {
+  const [attLateCols] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'attendance'`,
+  )
+  const attLateExisting = new Set(attLateCols.map((c) => c.COLUMN_NAME))
+  const attAlters = []
+  if (!attLateExisting.has('late_minutes')) attAlters.push('ADD COLUMN late_minutes INT NULL')
+  if (!attLateExisting.has('late_points')) attAlters.push('ADD COLUMN late_points INT NOT NULL DEFAULT 0')
+  if (attAlters.length) await db.query(`ALTER TABLE attendance ${attAlters.join(', ')}`)
+}
+
+const ensureSettingsLatePenaltyColumn = async () => {
+  const [settingsLateCols] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'settings'`,
+  )
+  const settingsLateExisting = new Set(settingsLateCols.map((c) => c.COLUMN_NAME))
+  if (!settingsLateExisting.has('late_penalty_per_point_rupiah')) {
+    await db.query('ALTER TABLE settings ADD COLUMN late_penalty_per_point_rupiah INT NOT NULL DEFAULT 10000')
+  }
+  const [settingsLateCols2] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'settings'
+       AND COLUMN_NAME = 'late_penalty_per_point_rupiah'`,
+  )
+  if (settingsLateCols2.length) {
+    await db.query('UPDATE settings SET late_penalty_per_point_rupiah = 10000 WHERE late_penalty_per_point_rupiah IS NULL OR late_penalty_per_point_rupiah < 0')
+  }
+}
+
+let coreLateSchemaPromise = null
+const ensureCoreLateSchemaForRequest = async () => {
+  if (!coreLateSchemaPromise) {
+    coreLateSchemaPromise = (async () => {
+      await ensureAttendanceLateColumns()
+      await ensureSettingsLatePenaltyColumn()
+    })().catch((err) => {
+      coreLateSchemaPromise = null
+      throw err
+    })
+  }
+  await coreLateSchemaPromise
+}
+
 const ensureCustomersLeavesLateSchema = async () => {
   await db.query(`
     CREATE TABLE IF NOT EXISTS customers (
@@ -130,31 +182,72 @@ const ensureCustomersLeavesLateSchema = async () => {
     )
   `)
 
-  const [attLateCols] = await db.query(
+  await ensureAttendanceLateColumns()
+  await ensureSettingsLatePenaltyColumn()
+}
+
+const ensureOfficesSchema = async () => {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS offices (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(150) NOT NULL,
+      latitude DECIMAL(10,7) NOT NULL,
+      longitude DECIMAL(10,7) NOT NULL,
+      radius_meter INT NOT NULL DEFAULT 300,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `)
+
+  const [attCols] = await db.query(
     `SELECT COLUMN_NAME
      FROM INFORMATION_SCHEMA.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE()
        AND TABLE_NAME = 'attendance'`,
   )
-  const attLateExisting = new Set(attLateCols.map((c) => c.COLUMN_NAME))
-  const attAlters = []
-  if (!attLateExisting.has('late_minutes')) attAlters.push('ADD COLUMN late_minutes INT NULL AFTER admin_note')
-  if (!attLateExisting.has('late_points')) attAlters.push('ADD COLUMN late_points INT NOT NULL DEFAULT 0 AFTER late_minutes')
-  if (attAlters.length) await db.query(`ALTER TABLE attendance ${attAlters.join(', ')}`)
+  const attExisting = new Set(attCols.map((c) => c.COLUMN_NAME))
+  const alters = []
+  if (!attExisting.has('office_id_check_in')) alters.push('ADD COLUMN office_id_check_in INT NULL AFTER user_id')
+  if (!attExisting.has('office_id_check_out')) alters.push('ADD COLUMN office_id_check_out INT NULL AFTER office_id_check_in')
+  if (alters.length) await db.query(`ALTER TABLE attendance ${alters.join(', ')}`)
 
-  const [settingsLateCols] = await db.query(
-    `SELECT COLUMN_NAME
-     FROM INFORMATION_SCHEMA.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'settings'`,
+  const [fkRows] = await db.query(
+    `SELECT CONSTRAINT_NAME
+     FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'attendance'
+       AND CONSTRAINT_NAME = 'fk_attendance_office_check_in'`,
   )
-  const settingsLateExisting = new Set(settingsLateCols.map((c) => c.COLUMN_NAME))
-  if (!settingsLateExisting.has('late_penalty_per_point_rupiah')) {
+  if (!fkRows.length) {
     await db.query(
-      'ALTER TABLE settings ADD COLUMN late_penalty_per_point_rupiah INT NOT NULL DEFAULT 10000 AFTER default_task_max_claimants',
+      'ALTER TABLE attendance ADD CONSTRAINT fk_attendance_office_check_in FOREIGN KEY (office_id_check_in) REFERENCES offices(id) ON DELETE SET NULL',
     )
   }
-  await db.query('UPDATE settings SET late_penalty_per_point_rupiah = 10000 WHERE late_penalty_per_point_rupiah IS NULL OR late_penalty_per_point_rupiah < 0')
+  const [fkRows2] = await db.query(
+    `SELECT CONSTRAINT_NAME
+     FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'attendance'
+       AND CONSTRAINT_NAME = 'fk_attendance_office_check_out'`,
+  )
+  if (!fkRows2.length) {
+    await db.query(
+      'ALTER TABLE attendance ADD CONSTRAINT fk_attendance_office_check_out FOREIGN KEY (office_id_check_out) REFERENCES offices(id) ON DELETE SET NULL',
+    )
+  }
+
+  const [[officeCount]] = await db.query('SELECT COUNT(*) AS total FROM offices')
+  if (!Number(officeCount?.total || 0)) {
+    const [[legacySettings]] = await db.query('SELECT office_name, office_latitude, office_longitude, office_radius_meter FROM settings LIMIT 1')
+    if (legacySettings?.office_latitude !== null && legacySettings?.office_longitude !== null) {
+      await db.query('INSERT INTO offices (name, latitude, longitude, radius_meter) VALUES (?, ?, ?, ?)', [
+        String(legacySettings.office_name || 'Kantor Utama'),
+        legacySettings.office_latitude,
+        legacySettings.office_longitude,
+        Number(legacySettings.office_radius_meter || 300),
+      ])
+    }
+  }
 }
 
 const formatDateYmd = (d) => {
@@ -236,6 +329,16 @@ app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 app.use('/uploads-my-sicepat', express.static(uploadDir))
+
+/** Pastikan kolom late_minutes / late_points / late_penalty ada sebelum route lain (mencegah ER_BAD_FIELD_ERROR jika migrasi boot tidak jalan). */
+app.use(async (req, res, next) => {
+  try {
+    await ensureCoreLateSchemaForRequest()
+    next()
+  } catch (error) {
+    next(error)
+  }
+})
 
 const authMiddleware = (roles = []) => (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1]
@@ -329,6 +432,64 @@ app.put('/api/settings', authMiddleware(['admin']), async (req, res) => {
     )
   }
   res.json({ message: 'Settings berhasil disimpan' })
+})
+
+app.get('/api/offices', authMiddleware(), async (_, res) => {
+  const [rows] = await db.query('SELECT id, name, latitude, longitude, radius_meter, created_at, updated_at FROM offices ORDER BY name ASC')
+  res.json(rows)
+})
+
+app.post('/api/offices', authMiddleware(['admin']), async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const latitude = Number(req.body?.latitude)
+  const longitude = Number(req.body?.longitude)
+  const radiusMeterRaw = Number(req.body?.radius_meter)
+  const radius_meter = Number.isFinite(radiusMeterRaw) && radiusMeterRaw > 0 ? Math.floor(radiusMeterRaw) : 300
+  if (!name) return res.status(400).json({ message: 'Nama kantor wajib diisi' })
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return res.status(400).json({ message: 'Latitude / longitude kantor tidak valid' })
+  }
+  const [result] = await db.query('INSERT INTO offices (name, latitude, longitude, radius_meter) VALUES (?, ?, ?, ?)', [
+    name,
+    latitude,
+    longitude,
+    radius_meter,
+  ])
+  res.json({ message: 'Kantor berhasil ditambah', id: result.insertId })
+})
+
+app.put('/api/offices/:id', authMiddleware(['admin']), async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const latitude = Number(req.body?.latitude)
+  const longitude = Number(req.body?.longitude)
+  const radiusMeterRaw = Number(req.body?.radius_meter)
+  const radius_meter = Number.isFinite(radiusMeterRaw) && radiusMeterRaw > 0 ? Math.floor(radiusMeterRaw) : 300
+  if (!name) return res.status(400).json({ message: 'Nama kantor wajib diisi' })
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return res.status(400).json({ message: 'Latitude / longitude kantor tidak valid' })
+  }
+  const [result] = await db.query('UPDATE offices SET name=?, latitude=?, longitude=?, radius_meter=?, updated_at=NOW() WHERE id=?', [
+    name,
+    latitude,
+    longitude,
+    radius_meter,
+    req.params.id,
+  ])
+  if (!result.affectedRows) return res.status(404).json({ message: 'Kantor tidak ditemukan' })
+  res.json({ message: 'Kantor berhasil diupdate' })
+})
+
+app.delete('/api/offices/:id', authMiddleware(['admin']), async (req, res) => {
+  const [usedRows] = await db.query(
+    'SELECT id FROM attendance WHERE office_id_check_in = ? OR office_id_check_out = ? LIMIT 1',
+    [req.params.id, req.params.id],
+  )
+  if (usedRows.length) {
+    return res.status(400).json({ message: 'Kantor sudah dipakai di data absensi, tidak bisa dihapus' })
+  }
+  const [result] = await db.query('DELETE FROM offices WHERE id=?', [req.params.id])
+  if (!result.affectedRows) return res.status(404).json({ message: 'Kantor tidak ditemukan' })
+  res.json({ message: 'Kantor berhasil dihapus' })
 })
 
 app.get('/api/users', authMiddleware(['admin']), async (req, res) => {
@@ -445,9 +606,12 @@ app.get('/api/attendance', authMiddleware(), async (req, res) => {
   }
   const whereClause = where.join(' AND ')
   const query = `SELECT a.*, u.name AS user_name, u.email AS user_email, u.role AS user_role,
-                 al.leave_type AS leave_type, al.note AS leave_note
+                 al.leave_type AS leave_type, al.note AS leave_note,
+                 oci.name AS office_name_check_in, oco.name AS office_name_check_out
                  FROM attendance a
                  JOIN users u ON u.id = a.user_id
+                 LEFT JOIN offices oci ON oci.id = a.office_id_check_in
+                 LEFT JOIN offices oco ON oco.id = a.office_id_check_out
                  LEFT JOIN attendance_leaves al ON al.user_id = a.user_id AND al.leave_date = a.attendance_date
                  WHERE ${whereClause}
                  ORDER BY a.attendance_date DESC, a.id DESC
@@ -465,28 +629,30 @@ app.get('/api/attendance', authMiddleware(), async (req, res) => {
 
 app.post('/api/attendance/check-in', authMiddleware(), async (req, res) => {
   const { latitude = null, longitude = null, location_note = null } = req.body
-  const [settingsRows] = await db.query('SELECT * FROM settings LIMIT 1')
-  const settings = settingsRows[0]
+  const officeId = Number(req.body?.office_id)
+  if (!Number.isFinite(officeId) || officeId < 1) return res.status(400).json({ message: 'Pilih kantor terlebih dahulu' })
+  const [officeRows] = await db.query('SELECT * FROM offices WHERE id = ? LIMIT 1', [officeId])
+  const office = officeRows[0]
+  if (!office) return res.status(400).json({ message: 'Kantor tidak ditemukan' })
   const attendanceDate = new Date()
   const dateString = attendanceDate.toISOString().slice(0, 10)
 
   let gpsStatus = 'OFF'
   let distanceKm = null
-  if (latitude !== null && longitude !== null && settings?.office_latitude !== null && settings?.office_longitude !== null) {
+  if (latitude !== null && longitude !== null) {
     gpsStatus = 'ON'
-    distanceKm = haversineKm(Number(latitude), Number(longitude), Number(settings.office_latitude), Number(settings.office_longitude))
+    distanceKm = haversineKm(Number(latitude), Number(longitude), Number(office.latitude), Number(office.longitude))
   }
-  const withinOfficeRadius =
-    distanceKm !== null && settings?.office_radius_meter ? distanceKm * 1000 <= Number(settings.office_radius_meter) : null
+  const withinOfficeRadius = distanceKm !== null ? distanceKm * 1000 <= Number(office.radius_meter || 300) : null
 
   const [existingRows] = await db.query('SELECT id FROM attendance WHERE user_id = ? AND DATE(attendance_date) = ?', [req.user.id, dateString])
   if (existingRows.length) return res.status(400).json({ message: 'Check-in hari ini sudah ada' })
 
   const [ins] = await db.query(
     `INSERT INTO attendance
-     (user_id, attendance_date, check_in_time, check_in_latitude, check_in_longitude, gps_status_check_in, location_note_check_in, distance_km_check_in, in_radius_check_in)
-     VALUES (?, CURDATE(), NOW(), ?, ?, ?, ?, ?, ?)`,
-    [req.user.id, latitude, longitude, gpsStatus, location_note, distanceKm, withinOfficeRadius],
+     (user_id, office_id_check_in, attendance_date, check_in_time, check_in_latitude, check_in_longitude, gps_status_check_in, location_note_check_in, distance_km_check_in, in_radius_check_in)
+     VALUES (?, ?, CURDATE(), NOW(), ?, ?, ?, ?, ?, ?)`,
+    [req.user.id, officeId, latitude, longitude, gpsStatus, location_note, distanceKm, withinOfficeRadius],
   )
   const [insertedRows] = await db.query('SELECT id, attendance_date, check_in_time FROM attendance WHERE id=?', [ins.insertId])
   const row = insertedRows[0]
@@ -496,25 +662,28 @@ app.post('/api/attendance/check-in', authMiddleware(), async (req, res) => {
 
 app.post('/api/attendance/check-out', authMiddleware(), async (req, res) => {
   const { latitude = null, longitude = null, location_note = null } = req.body
+  const officeId = Number(req.body?.office_id)
+  if (!Number.isFinite(officeId) || officeId < 1) return res.status(400).json({ message: 'Pilih kantor terlebih dahulu' })
+  const [officeRows] = await db.query('SELECT * FROM offices WHERE id = ? LIMIT 1', [officeId])
+  const office = officeRows[0]
+  if (!office) return res.status(400).json({ message: 'Kantor tidak ditemukan' })
   const dateString = new Date().toISOString().slice(0, 10)
-  const [settingsRows] = await db.query('SELECT * FROM settings LIMIT 1')
-  const settings = settingsRows[0]
   const [rows] = await db.query('SELECT * FROM attendance WHERE user_id = ? AND DATE(attendance_date) = ?', [req.user.id, dateString])
   if (!rows.length) return res.status(400).json({ message: 'Belum check-in hari ini' })
   if (rows[0].check_out_time) return res.status(400).json({ message: 'Sudah check-out hari ini' })
 
   let gpsStatus = 'OFF'
   let distanceKm = null
-  if (latitude !== null && longitude !== null && settings?.office_latitude !== null && settings?.office_longitude !== null) {
+  if (latitude !== null && longitude !== null) {
     gpsStatus = 'ON'
-    distanceKm = haversineKm(Number(latitude), Number(longitude), Number(settings.office_latitude), Number(settings.office_longitude))
+    distanceKm = haversineKm(Number(latitude), Number(longitude), Number(office.latitude), Number(office.longitude))
   }
-  const withinOfficeRadius =
-    distanceKm !== null && settings?.office_radius_meter ? distanceKm * 1000 <= Number(settings.office_radius_meter) : null
+  const withinOfficeRadius = distanceKm !== null ? distanceKm * 1000 <= Number(office.radius_meter || 300) : null
 
   await db.query(
     `UPDATE attendance
-     SET check_out_time = NOW(),
+     SET office_id_check_out = ?,
+         check_out_time = NOW(),
          check_out_latitude = ?,
          check_out_longitude = ?,
          gps_status_check_out = ?,
@@ -522,7 +691,7 @@ app.post('/api/attendance/check-out', authMiddleware(), async (req, res) => {
          distance_km_check_out = ?,
          in_radius_check_out = ?
      WHERE id = ?`,
-    [latitude, longitude, gpsStatus, location_note, distanceKm, withinOfficeRadius, rows[0].id],
+    [officeId, latitude, longitude, gpsStatus, location_note, distanceKm, withinOfficeRadius, rows[0].id],
   )
   res.json({ message: 'Check-out berhasil' })
 })
@@ -1134,12 +1303,15 @@ app.use((error, _, res, __) => {
 
 ensureTaskSchema()
   .then(() => ensureCustomersLeavesLateSchema())
+  .then(() => ensureOfficesSchema())
   .then(() => {
+    coreLateSchemaPromise = Promise.resolve()
     app.listen(PORT, () => {
       console.log(`API running on http://localhost:${PORT}`)
     })
   })
   .catch((error) => {
-    console.error('Failed to ensure DB schema', error.message)
+    console.error('Failed to ensure DB schema', error.message, error.sqlMessage || '', error.code || '')
+    if (error?.stack) console.error(error.stack)
     process.exit(1)
   })

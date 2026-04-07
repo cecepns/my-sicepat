@@ -9,6 +9,8 @@ const leaveTypeLabel = (t) => (t === 'permission_late' ? 'Izin terlambat' : 'Izi
 
 export default function UserAttendancePage() {
   const [settings, setSettings] = useState(null)
+  const [offices, setOffices] = useState([])
+  const [selectedOfficeId, setSelectedOfficeId] = useState('')
   const [rows, setRows] = useState([])
   const [meta, setMeta] = useState({ page: 1, limit: 10, total: 0 })
   const [lateSummary, setLateSummary] = useState(null)
@@ -22,11 +24,14 @@ export default function UserAttendancePage() {
   })
 
   const fetchData = async (page = 1) => {
-    const [s, a] = await Promise.all([
+    const [s, a, o] = await Promise.all([
       client.get(ENDPOINTS.settings),
       client.get(ENDPOINTS.attendance, { params: { page, limit: 10 } }),
+      client.get(ENDPOINTS.offices),
     ])
     setSettings(s.data)
+    setOffices(o.data || [])
+    if (!selectedOfficeId && o.data?.length) setSelectedOfficeId(String(o.data[0].id))
     setRows(a.data.data)
     setMeta({ page: a.data.page, limit: a.data.limit, total: a.data.total })
   }
@@ -64,9 +69,16 @@ export default function UserAttendancePage() {
     })
 
   const submit = async (type) => {
+    if (!selectedOfficeId) {
+      toast.error('Pilih lokasi kantor terlebih dahulu')
+      return
+    }
     try {
       const payload = await withLocation()
-      await client.post(type === 'in' ? ENDPOINTS.attendanceCheckIn : ENDPOINTS.attendanceCheckOut, payload)
+      await client.post(type === 'in' ? ENDPOINTS.attendanceCheckIn : ENDPOINTS.attendanceCheckOut, {
+        ...payload,
+        office_id: Number(selectedOfficeId),
+      })
       toast.success(type === 'in' ? 'Check-in berhasil' : 'Check-out berhasil')
       fetchData(meta.page)
       fetchLate()
@@ -122,11 +134,23 @@ export default function UserAttendancePage() {
           Check-in dan pengajuan izin hanya untuk akun Anda sendiri. Telat ≤ 1 jam = 1 poin; telat &gt; 1 jam = 2 poin. Izin sakit atau izin telat dengan
           keterangan = 0 poin.
         </p>
+        <div className="mt-4 max-w-md">
+          <label className="mb-1 block text-sm font-medium text-slate-700">Pilih Kantor (wajib)</label>
+          <select className="input" value={selectedOfficeId} onChange={(e) => setSelectedOfficeId(e.target.value)} required>
+            <option value="">-- Pilih kantor --</option>
+            {offices.map((office) => (
+              <option key={office.id} value={office.id}>
+                {office.name} (radius {office.radius_meter} m)
+              </option>
+            ))}
+          </select>
+          {!offices.length ? <p className="mt-1 text-xs text-rose-600">Belum ada data kantor. Minta admin menambahkan kantor dulu.</p> : null}
+        </div>
         <div className="mt-4 flex gap-2">
-          <button className="btn-primary" onClick={() => submit('in')}>
+          <button className="btn-primary" onClick={() => submit('in')} disabled={!offices.length}>
             Check-in
           </button>
-          <button className="btn border border-slate-200" onClick={() => submit('out')}>
+          <button className="btn border border-slate-200" onClick={() => submit('out')} disabled={!offices.length}>
             Check-out
           </button>
         </div>
@@ -266,6 +290,7 @@ export default function UserAttendancePage() {
                 <th className="px-4 py-3">Menit telat</th>
                 <th className="px-4 py-3">Poin</th>
                 <th className="px-4 py-3">Izin hari ini</th>
+                <th className="px-4 py-3">Kantor</th>
                 <th className="px-4 py-3">GPS</th>
               </tr>
             </thead>
@@ -295,6 +320,7 @@ export default function UserAttendancePage() {
                       '-'
                     )}
                   </td>
+                  <td className="px-4 py-3 text-slate-600">{row.office_name_check_in || row.office_name_check_out || '-'}</td>
                   <td className="px-4 py-3">
                     <span
                       className={`rounded-full px-2.5 py-1 text-xs font-semibold ${row.gps_status_check_in === 'ON' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}

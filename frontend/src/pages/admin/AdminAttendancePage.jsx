@@ -212,6 +212,7 @@ export default function AdminAttendancePage() {
               <tr>
                 <th className="px-4 py-3">User</th>
                 <th className="px-4 py-3">Tanggal</th>
+                <th className="px-4 py-3">Kantor</th>
                 <th className="px-4 py-3">Check-in</th>
                 <th className="px-4 py-3">Check-out</th>
                 <th className="px-4 py-3">Jarak ke Kantor</th>
@@ -233,6 +234,7 @@ export default function AdminAttendancePage() {
                       <>
                   <td className="px-4 py-3 font-medium text-slate-700">{r.user_name}</td>
                   <td className="px-4 py-3 text-slate-600">{dayjs(r.attendance_date).format('DD MMM YYYY')}</td>
+                  <td className="px-4 py-3 text-slate-600">{r.office_name_check_in || r.office_name_check_out || '-'}</td>
                   <td className="px-4 py-3 text-slate-600">{r.check_in_time ? dayjs(r.check_in_time).format('HH:mm:ss') : '-'}</td>
                   <td className="px-4 py-3 text-slate-600">{r.check_out_time ? dayjs(r.check_out_time).format('HH:mm:ss') : '-'}</td>
                   <td className="px-4 py-3 text-slate-600">{r.distance_km_check_in ? `${r.distance_km_check_in} km` : '-'}</td>
