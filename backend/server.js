@@ -186,6 +186,21 @@ const ensureCustomersLeavesLateSchema = async () => {
   await ensureSettingsLatePenaltyColumn()
 }
 
+const ensureCustomersExtraColumns = async () => {
+  const [customerCols] = await db.query(
+    `SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'customers'`,
+  )
+  const existing = new Set(customerCols.map((c) => c.COLUMN_NAME))
+  const alters = []
+  if (!existing.has('photo_url')) alters.push('ADD COLUMN photo_url VARCHAR(255) NULL AFTER address')
+  if (!existing.has('customer_code')) alters.push('ADD COLUMN customer_code VARCHAR(120) NULL AFTER phone')
+  if (!existing.has('customer_password')) alters.push('ADD COLUMN customer_password VARCHAR(255) NULL AFTER customer_code')
+  if (alters.length) await db.query(`ALTER TABLE customers ${alters.join(', ')}`)
+}
+
 const ensureOfficesSchema = async () => {
   await db.query(`
     CREATE TABLE IF NOT EXISTS offices (
@@ -369,6 +384,16 @@ const haversineKm = (lat1, lon1, lat2, lon2) => {
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+const uploadsBaseUrl = '/uploads-my-sicepat'
+const buildUploadUrl = (filename) => (filename ? `${uploadsBaseUrl}/${filename}` : null)
+const resolveUploadPathFromUrl = (urlValue) => {
+  const val = String(urlValue || '')
+  if (!val.startsWith(uploadsBaseUrl)) return null
+  const fileName = val.slice(uploadsBaseUrl.length + 1)
+  if (!fileName) return null
+  return path.join(uploadDir, path.basename(fileName))
 }
 
 app.get('/api/health', (_, res) => res.json({ ok: true }))
@@ -1118,32 +1143,66 @@ app.get('/api/customers', authMiddleware(), async (req, res) => {
   res.json({ data: rows, total: countRows[0].total, page: pg.page, limit: pg.limit })
 })
 
-app.post('/api/customers', authMiddleware(), async (req, res) => {
-  const { name, phone, address, status = 'active' } = req.body
+app.post('/api/customers', authMiddleware(), upload.single('photo'), async (req, res) => {
+  const { name, phone, address, status = 'active', customer_code = '', customer_password = '' } = req.body
   const nm = String(name || '').trim()
   const ph = String(phone || '').trim()
   const addr = String(address || '').trim()
+  const code = String(customer_code || '').trim()
+  const password = String(customer_password || '').trim()
   if (!nm || !ph || !addr) return res.status(400).json({ message: 'Nama, nomor telepon, dan alamat wajib diisi' })
   const st = status === 'inactive' ? 'inactive' : 'active'
-  await db.query('INSERT INTO customers (name, phone, address, status) VALUES (?, ?, ?, ?)', [nm, ph, addr, st])
+  const photoUrl = req.file ? buildUploadUrl(req.file.filename) : null
+  await db.query('INSERT INTO customers (name, phone, address, status, photo_url, customer_code, customer_password) VALUES (?, ?, ?, ?, ?, ?, ?)', [
+    nm,
+    ph,
+    addr,
+    st,
+    photoUrl,
+    code || null,
+    password || null,
+  ])
   res.json({ message: 'Pelanggan berhasil ditambah' })
 })
 
-app.put('/api/customers/:id', authMiddleware(), async (req, res) => {
-  const { name, phone, address, status = 'active' } = req.body
+app.put('/api/customers/:id', authMiddleware(), upload.single('photo'), async (req, res) => {
+  const { name, phone, address, status = 'active', customer_code = '', customer_password = '', keep_existing_photo = '1' } = req.body
   const nm = String(name || '').trim()
   const ph = String(phone || '').trim()
   const addr = String(address || '').trim()
+  const code = String(customer_code || '').trim()
+  const password = String(customer_password || '').trim()
   if (!nm || !ph || !addr) return res.status(400).json({ message: 'Nama, nomor telepon, dan alamat wajib diisi' })
   const st = status === 'inactive' ? 'inactive' : 'active'
-  const [r] = await db.query('UPDATE customers SET name=?, phone=?, address=?, status=? WHERE id=?', [nm, ph, addr, st, req.params.id])
+  const [oldRows] = await db.query('SELECT id, photo_url FROM customers WHERE id=? LIMIT 1', [req.params.id])
+  if (!oldRows.length) return res.status(404).json({ message: 'Pelanggan tidak ditemukan' })
+  const oldPhotoUrl = oldRows[0].photo_url
+  const shouldKeepPhoto = String(keep_existing_photo) === '1'
+  let nextPhotoUrl = oldPhotoUrl
+  if (req.file) {
+    nextPhotoUrl = buildUploadUrl(req.file.filename)
+  } else if (!shouldKeepPhoto) {
+    nextPhotoUrl = null
+  }
+  const [r] = await db.query(
+    'UPDATE customers SET name=?, phone=?, address=?, status=?, photo_url=?, customer_code=?, customer_password=? WHERE id=?',
+    [nm, ph, addr, st, nextPhotoUrl, code || null, password || null, req.params.id],
+  )
   if (!r.affectedRows) return res.status(404).json({ message: 'Pelanggan tidak ditemukan' })
+  if ((req.file || !shouldKeepPhoto) && oldPhotoUrl && oldPhotoUrl !== nextPhotoUrl) {
+    const oldPath = resolveUploadPathFromUrl(oldPhotoUrl)
+    if (oldPath && fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+  }
   res.json({ message: 'Pelanggan berhasil diupdate' })
 })
 
 app.delete('/api/customers/:id', authMiddleware(), async (req, res) => {
+  const [oldRows] = await db.query('SELECT id, photo_url FROM customers WHERE id=? LIMIT 1', [req.params.id])
+  if (!oldRows.length) return res.status(404).json({ message: 'Pelanggan tidak ditemukan' })
   const [r] = await db.query('DELETE FROM customers WHERE id=?', [req.params.id])
   if (!r.affectedRows) return res.status(404).json({ message: 'Pelanggan tidak ditemukan' })
+  const oldPath = resolveUploadPathFromUrl(oldRows[0].photo_url)
+  if (oldPath && fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
   res.json({ message: 'Pelanggan berhasil dihapus' })
 })
 
@@ -1304,6 +1363,7 @@ app.use((error, _, res, __) => {
 ensureTaskSchema()
   .then(() => ensureCustomersLeavesLateSchema())
   .then(() => ensureOfficesSchema())
+  .then(() => ensureCustomersExtraColumns())
   .then(() => {
     coreLateSchemaPromise = Promise.resolve()
     app.listen(PORT, () => {
