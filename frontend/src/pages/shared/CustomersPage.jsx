@@ -19,6 +19,16 @@ const emptyForm = {
   remove_photo: false,
 }
 
+const toWhatsAppNumber = (phone) => {
+  const cleaned = String(phone || '').replace(/[^\d+]/g, '')
+  if (!cleaned) return ''
+  if (cleaned.startsWith('+62')) return cleaned.slice(1)
+  if (cleaned.startsWith('62')) return cleaned
+  if (cleaned.startsWith('0')) return `62${cleaned.slice(1)}`
+  if (cleaned.startsWith('+')) return cleaned.slice(1)
+  return cleaned
+}
+
 export default function CustomersPage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -116,6 +126,17 @@ export default function CustomersPage() {
     }
   }
 
+  const copyPhone = async (phone) => {
+    const value = String(phone || '').trim()
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      toast.success(`Nomor disalin: ${value}`)
+    } catch {
+      toast.error('Gagal menyalin nomor')
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="card">
@@ -172,7 +193,23 @@ export default function CustomersPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 font-medium text-slate-700">{row.name}</td>
-                  <td className="px-4 py-3 text-slate-600">{row.phone}</td>
+                  <td className="px-4 py-3 text-slate-600">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button type="button" className="text-left font-medium text-[#11295a] hover:underline" onClick={() => copyPhone(row.phone)}>
+                        {row.phone}
+                      </button>
+                      {toWhatsAppNumber(row.phone) ? (
+                        <a
+                          href={`https://wa.me/${toWhatsAppNumber(row.phone)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-full border border-emerald-200 px-2 py-0.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                        >
+                          WA
+                        </a>
+                      ) : null}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-slate-600">{row.customer_code || '-'}</td>
                   <td className="px-4 py-3 text-slate-600">{row.customer_password || '-'}</td>
                   <td className="max-w-xs truncate px-4 py-3 text-slate-600" title={row.address}>
